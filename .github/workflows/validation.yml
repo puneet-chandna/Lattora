@@ -94,6 +94,20 @@ jobs:
           assert metadata['production']['sampled_peak_rss_bytes'] > 0
           PY
 
+      - name: Run and independently validate a configured static scenario
+        shell: bash
+        run: |
+          ./lattora.sh --profile scenario --preset known-answer-tight --workers 1 --plain --output-dir .cloudsim/ci/scenario
+          ./lattora.sh validate .cloudsim/ci/scenario/scenario-* --plain --output-dir .cloudsim/ci/scenario-validation
+          .cloudsim/venv/bin/python -B - <<'PY'
+          import json
+          from pathlib import Path
+          metadata = json.loads(next(Path('.cloudsim/ci/scenario').glob('scenario-*/runner.json')).read_text())
+          assert metadata['status'] == 'complete' and metadata['validation'] == 'PASS'
+          report = json.loads(next(Path('.cloudsim/ci/scenario-validation').glob('validate-*/runner.json')).read_text())
+          assert report['validation'] == 'PASS' and report['exit_code'] == 0
+          PY
+
   release-smoke:
     if: github.event_name == 'workflow_dispatch'
     strategy:
