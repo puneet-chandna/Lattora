@@ -57,6 +57,7 @@ class PackagedCliIT {
                 assertTrue(help.contains("--profile smoke|explore|research"));
                 assertTrue(help.contains("--profile stress"));
                 assertTrue(help.contains("./run-stress.sh --help"));
+                assertTrue(help.contains("--profile scenario"));
             }
             try(var paths = Files.list(temp)) { assertEquals(List.of("console.txt"), paths.map(p -> p.getFileName().toString()).toList()); }
         }
@@ -195,6 +196,35 @@ class PackagedCliIT {
         assertEquals(2,run(duplicate.toArray(String[]::new)));
         assertEquals(2,run("--profile","research","--vms","10"));
         args[11]="2147483647"; assertEquals(2,run(args));
+    }
+    @Test void scenarioDispatchRunsTheKnownAnswerAndRejectsInvalidConfiguration() throws Exception {
+        Files.writeString(temp.resolve("tight.json"),"{\"config_version\":1,\"name\":\"known-answer-tight\",\"master_seed\":123456,\"replications\":1,"
+            +"\"algorithms\":[\"HO\",\"GA\",\"FirstFit\",\"BestFit\"],\"optimizer\":{\"population\":10,\"iterations\":4},"
+            +"\"hosts\":[{\"count\":2,\"pes\":2,\"mips_per_pe\":3000,\"ram_mib\":8192,\"bw_mbps\":2000,\"storage_mib\":20000,\"idle_w\":100,\"max_w\":200}],"
+            +"\"vms\":{\"count\":2,\"pes\":[2],\"mips_per_pe\":[3000],\"ram_mib\":[8192],\"bw_mbps\":[2000],\"storage_mib\":[20000]},"
+            +"\"workload\":{\"length_seconds\":{\"min\":60,\"max\":60},\"utilization\":1.0,\"release_seconds\":0.0}}");
+        assertEquals(0,run("--profile","scenario","--config","tight.json","--output-dir","scenario results"));
+        try(var dirs=Files.list(temp.resolve("scenario results"))) {
+            var directory=dirs.findFirst().orElseThrow();
+            var manifest=JsonParser.parseString(Files.readString(directory.resolve("run.json"))).getAsJsonObject();
+            assertEquals("COMPLETE",manifest.get("state").getAsString());
+            assertEquals("static_scenario_v1",manifest.get("protocol").getAsString());
+            assertEquals(1,manifest.get("scenario_schema_version").getAsInt());
+            assertEquals(4,manifest.get("successful_cases").getAsInt());
+            assertTrue(manifest.get("artifact_sha256").getAsString().matches("[a-f0-9]{64}"));
+            for(var row:scientificRows(directory,"raw/cases.csv")) assertEquals("400.0",row.get("objective_w"));
+            validate(directory,"scenario_validator.py");
+        }
+        Files.writeString(temp.resolve("unknown.json"),Files.readString(temp.resolve("tight.json")).replace("\"replications\":1,","\"replications\":1,\"bogus\":2,"));
+        Files.writeString(temp.resolve("utilization.json"),Files.readString(temp.resolve("tight.json")).replace("\"utilization\":1.0","\"utilization\":0.5"));
+        Files.writeString(temp.resolve("version.json"),Files.readString(temp.resolve("tight.json")).replace("\"config_version\":1","\"config_version\":2"));
+        Files.writeString(temp.resolve("optimizer.json"),Files.readString(temp.resolve("tight.json")).replace("\"optimizer\":{\"population\":10,\"iterations\":4}","\"optimizer\":{\"population\":10,\"iterations\":4}").replace("\"algorithms\":[\"HO\",\"GA\",\"FirstFit\",\"BestFit\"]","\"algorithms\":[\"FirstFit\",\"BestFit\"]"));
+        for(var invalid:List.of("unknown.json","utilization.json","version.json","optimizer.json"))
+            assertEquals(2,run("--profile","scenario","--config",invalid,"--output-dir","invalid results"),invalid);
+        assertEquals(1,run("--profile","scenario","--config","missing.json","--output-dir","invalid results"));
+        assertEquals(2,run("--profile","scenario","--config","tight.json","--bogus","1","--output-dir","invalid results"));
+        assertEquals(2,run("--profile","scenario","--output-dir","invalid results"));
+        assertFalse(Files.exists(temp.resolve("invalid results")));
     }
     @Test void invalidPropertyOverlayIsConfigFailureWithoutOutput() throws Exception {
         Files.writeString(temp.resolve("config.properties"),"master.seed=1\nmaster\\u002eseed=2\n");
