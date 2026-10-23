@@ -14,7 +14,7 @@ import lattora_context as context
 import lattora_install as install
 
 COMMANDS = 'run validate doctor update rollback uninstall completion'
-PROFILES = 'smoke explore research stress'
+PROFILES = 'smoke explore research stress scenario'
 
 
 def completion(shell):
@@ -51,7 +51,7 @@ def _main(arguments):
     if arguments and arguments[0] in ('--help','-h'):
         print(__doc__+'\n\nUsage: lattora [COMMAND]\n\n'+
               '  lattora                       Open the terminal workbench\n'+
-              '  lattora run --profile PROFILE  smoke | explore | research | stress\n'+
+              '  lattora run --profile PROFILE  smoke | explore | research | stress | scenario\n'+
               '  lattora validate DIRECTORY    Independently validate retained evidence\n'+
               '  lattora doctor                Check runtime, memory and installation\n'+
               '  lattora update [VERSION]      Install a stable release (--check to inspect)\n'+
@@ -100,7 +100,7 @@ def _main(arguments):
             return cloudsim.main(['--check','--plain',*arguments[1:]])
         if arguments and arguments[0] == 'run':
             if not any(arg == '--profile' or arg.startswith('--profile=') for arg in arguments[1:]) and '--help' not in arguments[1:]:
-                raise ValueError('Select --profile smoke|explore|research|stress; use lattora run --help.')
+                raise ValueError('Select --profile smoke|explore|research|stress|scenario; use lattora run --help.')
             return cloudsim.main(arguments[1:])
         if arguments and arguments[0] == 'validate': return cloudsim.main(['--validate',*arguments[1:]])
         if arguments and not arguments[0].startswith('-'): raise ValueError('Unknown command: '+arguments[0])
