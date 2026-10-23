@@ -40,6 +40,44 @@ these are 100/20, 500/100 and 10000/2000 VMs/hosts, followed by the full Large
 campaign. It does not run the full intermediate presets. Calibrations run
 serially so their resource measurements remain comparable.
 
+## Configured static scenarios
+
+The `scenario` profile runs a static campaign over a versioned JSON document instead of
+frozen dimensions: host classes with their own power curves, VM demand distributions,
+workload lengths, algorithms, replications, seeds and optimizer effort.
+
+```sh
+lattora run --profile scenario --preset known-answer-tight
+lattora run --profile scenario --config scenario.json --output-dir "./my results"
+lattora run --profile scenario --preset heterogeneous-hosts --dry-run
+```
+
+Five presets ship with the app: three minimal known-answer instances
+(`known-answer-feasible`, `known-answer-tight`, `known-answer-infeasible`) and two
+families (`heterogeneous-hosts`, `resource-pressure`). They state what a configuration
+can express and what the engine answers with.
+
+| Preset | Class | Expected values |
+| --- | --- | --- |
+| `known-answer-feasible` | `CONSTRUCTIBLE` | every algorithm `objective_w = 125.0`, `energy_j = 3750.0` |
+| `known-answer-tight` | `CONSTRUCTIBLE` | every algorithm `objective_w = 400.0`, `energy_j = 24000.0` |
+| `known-answer-infeasible` | `INFEASIBLE_PROVED` | `SCENARIO_INFEASIBLE`: `ram_mib` demand 8192 exceeds capacity 4096 |
+| `heterogeneous-hosts` | `CONSTRUCTIBLE` | 18 hosts in 3 classes, 48 VMs, 2 replications |
+| `resource-pressure` | `CONSTRUCTIBLE` | 10 hosts, 36 VMs, `objective_w = 1800.0` |
+
+Each replication is classified before it runs: `CONSTRUCTIBLE` (a constructive witness
+placed every VM), `UNPROVED` (the summed demand fits but the witness was rejected; the
+replication fails explicitly instead of being reported as feasible) or
+`INFEASIBLE_PROVED` (a necessary condition already fails and the run stops before
+simulating it). Malformed documents, unknown and duplicate keys, unsupported utilization
+or release values, impossible demand ranges and unrepresentable per-PE MIPS are rejected
+before any simulation starts, with exit code 2 and no run directory.
+
+[SCENARIOS.md](SCENARIOS.md) documents the schema, units, limits, draw order, seed
+identity, presets, feasibility classes, supported simulator models and the recorded
+request/resolution/hash layout. Configured campaigns are descriptive: they do not change
+the frozen Research protocol or its claims.
+
 ## Configuration and paths
 
 Use `--output-dir DIRECTORY` to choose a parent for unique retained runs, or

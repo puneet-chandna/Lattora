@@ -87,6 +87,7 @@ launching Lattora never checks for updates.
 | `explore` | Inspect descriptive comparisons | 10, 50 | 40 |
 | `research` | Run the frozen protocol and sensitivity analysis | 10, 50, 100 | 450 |
 | `stress` | Measure a configurable static campaign | User selected | Depends on settings |
+| `scenario` | Run a versioned configured static campaign | User configured | User selected |
 
 ```sh
 lattora run --profile explore
@@ -108,7 +109,8 @@ Use `lattora run --help` for all experiment options.
 | Command | What it does |
 | --- | --- |
 | `lattora` | Open the terminal workbench |
-| `lattora run --profile PROFILE` | Run Smoke, Explore, Research or Stress |
+| `lattora run --profile PROFILE` | Run Smoke, Explore, Research, Stress or Scenario |
+| `lattora run --profile scenario --config FILE` | Run a configured static scenario from a versioned document |
 | `lattora validate DIRECTORY` | Independently validate retained results |
 | `lattora doctor` | Check installation, runtimes, memory and data paths |
 | `lattora --version` | Print the installed version |
