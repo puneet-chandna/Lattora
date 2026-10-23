@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import statistics
 
-PROFILES=('smoke','explore','research','stress')
+PROFILES=('smoke','explore','research','stress','scenario')
 
 
 def _require(condition,message):
@@ -88,9 +88,9 @@ def build_result_summary(metadata):
                                 'detail':'Release CI verification recorded; local build/tests '+str(tests)+'.'})
     else:
         result['checks'].append({'label':'Build verification','status':str(tests),'detail':build_detail})
-    if profile=='stress':
+    if profile in ('stress','scenario'):
         result['checks'].append({'label':'Hypothesis tests','status':'NOT_APPLICABLE',
-                                 'detail':'Stress is descriptive; BCa, wild-bootstrap and Holm run in frozen Research.'})
+                                 'detail':'This static campaign is descriptive; BCa, wild-bootstrap and Holm run in frozen Research.'})
         result['notes'].append('Descriptive results for this static workload; no statistical superiority claim.')
     elif profile in ('smoke','explore'):
         result['checks'].append({'label':'Hypothesis tests','status':'NOT_APPLICABLE',
@@ -111,9 +111,17 @@ def build_result_summary(metadata):
                  and manifest.get('artifact_sha256')==metadata['artifact_sha256'] and isinstance(manifest['files'],dict),
                  'Result artifact does not match its campaign')
         stress=profile=='stress'
-        _require(manifest.get('stress_schema_version')==1 and manifest.get('experiment_kind')=='static_stress' if stress
-                 else manifest.get('schema_version')==2,'Unsupported result schema')
-        raw=_csv(root,run,manifest,'raw/cases.csv' if stress else 'raw/main_results.csv')
+        scenario=profile=='scenario'
+        if scenario:
+            _require(manifest.get('scenario_schema_version')==1 and manifest.get('experiment_kind')=='static_scenario'
+                     and manifest.get('protocol')=='static_scenario_v1'
+                     and 'stress_schema_version' not in manifest and 'schema_version' not in manifest,
+                     'Unsupported result schema')
+        elif stress:
+            _require(manifest.get('stress_schema_version')==1 and manifest.get('experiment_kind')=='static_stress','Unsupported result schema')
+        else:
+            _require(manifest.get('schema_version')==2,'Unsupported result schema')
+        raw=_csv(root,run,manifest,'raw/cases.csv' if stress or scenario else 'raw/main_results.csv')
         if profile=='research': raw+=_csv(root,run,manifest,'raw/sensitivity_results.csv')
         expected=_integer(manifest['expected_cases'])
         _require(len(raw)==expected==_integer(manifest['successful_cases']) and _integer(manifest['failed_cases'])==0,
@@ -123,14 +131,14 @@ def build_result_summary(metadata):
             for field in ('energy_j','sla_rate','allocation_wall_ns'):
                 value=_number(row[field]);_require(value>=0,'Negative result metric')
             _require(_number(row['energy_j'])>0 and _number(row['sla_rate'])<=1,'Invalid energy or SLA metric')
-        data=raw if stress else [r for r in raw if r['phase']=='main']
-        if stress:
+        data=raw if stress or scenario else [r for r in raw if r['phase']=='main']
+        if stress or scenario:
             means=_csv(root,run,manifest,'analysis/summary.csv')
         elif profile=='smoke':
             means=[]
-            for scenario,algorithm in dict.fromkeys((r['scenario'],r['algorithm']) for r in data):
-                group=[r for r in data if (r['scenario'],r['algorithm'])==(scenario,algorithm)]
-                means.append({'run_id':manifest['run_id'],'scenario':scenario,'algorithm':algorithm,'n':len(group),
+            for scenario_name,algorithm in dict.fromkeys((r['scenario'],r['algorithm']) for r in data):
+                group=[r for r in data if (r['scenario'],r['algorithm'])==(scenario_name,algorithm)]
+                means.append({'run_id':manifest['run_id'],'scenario':scenario_name,'algorithm':algorithm,'n':len(group),
                               **{target:statistics.fmean(_number(r[source]) for r in group) for source,target in
                                  [('energy_j','energy_mean_j'),('sla_rate','sla_mean'),('allocation_wall_ns','allocation_mean_ns')]}})
         else: means=_csv(root,run,manifest,'analysis/scenario_summary.csv')
@@ -153,19 +161,23 @@ def build_result_summary(metadata):
             row={'algorithm':mean['algorithm'],'scenario':mean['scenario'],'cases':len(group),
                  'energy_j':_number(mean['energy_mean_j']),'sla':_number(mean['sla_mean']),
                  'runtime_ms':_number(mean['allocation_mean_ns'])/1_000_000}
-            if stress:
+            if stress or scenario:
                 _require(math.isclose(_number(mean['objective_mean_w']),statistics.fmean(_number(r['objective_w']) for r in group),rel_tol=2e-12,abs_tol=1e-10),
                          'Result mean objective disagrees')
                 row['objective_w']=_number(mean['objective_mean_w'])
             algorithms.append(row)
         config=manifest['effective_config']
-        effort=f'N{config["population"]} / T{config["iterations"]} / R{config["replications"]}'
-        if stress:
+        if scenario:
+            classes=int(config['host.classes'])
+            effort=f'R{config["replication.count"]} · {classes} host class{"es" if classes>1 else ""} · {config["algorithms"]}'
+        else:
+            effort=f'N{config["population"]} / T{config["iterations"]} / R{config["replications"]}'
+        if stress or scenario:
             result['overview'].append(('Experiment',f'{config["vm.count"]} VMs / {config["host.count"]} hosts · '+effort))
         else: result['overview'].append(('Experiment',profile.capitalize()+' · '+effort))
         result['overview'].append(('Master seed',str(config['master.seed'])))
         counts=f'{expected:,}/{expected:,} cases'
-        if stress:
+        if stress or scenario:
             evaluations=sum(_integer(r['evaluations']) for r in raw)
             _require(evaluations==_integer(manifest['completed_evaluations'])==_integer(manifest['expected_evaluations']),
                      'Result evaluation counts disagree')
@@ -184,8 +196,8 @@ def build_result_summary(metadata):
             if production.get('sampled_peak_rss_bytes') is not None: runtime+=f' · {_number(production["sampled_peak_rss_bytes"])/1024**2:,.0f} MiB sampled peak RSS'
             result['overview'].append(('Runtime',runtime))
         result['checks'].append({'label':'Result summary','status':'PASS','detail':'Stored hashes and means agree with completed raw cases.'})
-        if profile in ('stress','explore','research'):
-            result['checks'].append({'label':'Descriptive analysis','status':'PASS','detail':'Observed means'+(' and sample standard deviations' if not stress else '')+' retained and checked.'})
+        if profile in ('stress','scenario','explore','research'):
+            result['checks'].append({'label':'Descriptive analysis','status':'PASS','detail':'Observed means'+(' and sample standard deviations' if not (stress or scenario) else '')+' retained and checked.'})
         if profile=='research':
             decisions=_csv(root,run,manifest,'analysis/pairwise_primary.csv')
             expected_keys={(scenario,baseline,claim) for scenario in config['scenarios'].split(',')
@@ -203,7 +215,7 @@ def build_result_summary(metadata):
                      'Research claim counts disagree with campaign metadata')
             result['checks'].append({'label':'Hypothesis tests','status':'RECORDED_PASS',
                                      'detail':f'Recorded BCa/wild-bootstrap/Holm analysis: {claims} CLAIM / {18-claims} NO_CLAIM.'})
-        if stress:
+        if stress or scenario:
             lowest=min(r['energy_j'] for r in algorithms)
             names=', '.join(r['algorithm'] for r in algorithms if math.isclose(r['energy_j'],lowest,rel_tol=2e-12))
             result['notes'].insert(0,f'Lowest observed mean energy: {names} · {lowest/1000:,.2f} kJ.')

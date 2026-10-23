@@ -886,7 +886,7 @@ class CloudSimApp(App):
                           Text(number(row.get('runtime_ms'),1)))
         self.query_one('#algorithm-means', Static).update(means)
         self.query_one('#algorithm-title', Static).update('Algorithm means' if compact else
-            'Algorithm means · '+('production cases' if self.outcome.get('profile')=='stress' else 'main cases'))
+            'Algorithm means · '+('production cases' if self.outcome.get('profile') in ('stress','scenario') else 'main cases'))
         self.query_one('#algorithm-means').display = bool(algorithms)
         self.query_one('#algorithm-title').display = bool(algorithms)
 

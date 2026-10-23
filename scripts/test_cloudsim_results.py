@@ -65,6 +65,36 @@ class ResultSummaryTests(unittest.TestCase):
         self.assertIn('descriptive',' '.join(result['notes']).lower())
         self.assertIn('reused',str(result['checks']).lower())
 
+    def scenario(self):
+        """A minimal complete scenario campaign mirroring the stress fixture shape."""
+        self.manifest.update(experiment_kind='static_scenario',profile='scenario')
+        self.manifest.pop('stress_schema_version')
+        self.manifest.update(scenario_schema_version=1,protocol='static_scenario_v1')
+        self.manifest['effective_config']={'vm.count':'2','host.count':'2','host.classes':'1',
+                                            'replication.count':'1','algorithms':'HO,GA,FirstFit,BestFit',
+                                            'master.seed':'123456'}
+        self.manifest.update(expected_cases=4,successful_cases=4,completed_evaluations=262,expected_evaluations=262)
+        for row in self.rows: row['phase']='scenario'
+        self.write_csv('raw/cases.csv',self.rows)
+        for mean in self.means: mean['phase']='scenario'
+        self.write_csv('analysis/summary.csv',self.means)
+        self.write_manifest()
+        self.meta['profile']='scenario'
+
+    def test_scenario_summary_reports_host_classes_and_objective_means(self):
+        self.scenario();result=self.summary()
+        self.assertIsNone(result['error'])
+        self.assertEqual(len(result['algorithms']),4)
+        self.assertEqual(result['algorithms'][0]['objective_w'],10.)
+        self.assertIn(('Experiment','2 VMs / 2 hosts · R1 · 1 host class · HO,GA,FirstFit,BestFit'),result['overview'])
+        self.assertIn('262 evaluations',str(result['overview']))
+        check=next(c for c in result['checks'] if 'Hypothesis' in c['label'])
+        self.assertEqual(check['status'],'NOT_APPLICABLE')
+
+    def test_scenario_with_stress_schema_keys_is_rejected(self):
+        self.scenario();self.manifest['stress_schema_version']=1;self.write_manifest()
+        self.assertTrue(self.summary()['error'])
+
     def test_changed_summary_hides_means_and_reports_unavailable(self):
         file=self.run/'analysis/summary.csv';file.write_text(file.read_text().replace('100.0','90.0'))
         result=self.summary();self.assertTrue(result['error']);self.assertEqual(result['algorithms'],[])
