@@ -38,4 +38,41 @@ public final class ScenarioGenerator {
         Witness.validateNative(inputs);
         return new ScenarioSpec(inputs,ScenarioObjects.measureReferences(inputs));
     }
+    /** Host classes are emitted verbatim in file order; each VM then draws one value per field in field order. */
+    public static Inputs configuredInputs(long master,String phase,String name,int replication,GenerationSpec spec) {
+        var seeds=new SeedMetadata(master,phase,name,replication,Seeds.derive(master,phase,name,replication,"scenario"),Seeds.derive(master,phase,name,replication,"workload"));
+        var scenario=new Random(seeds.scenarioSeed()); var workload=new Random(seeds.workloadSeed());
+        var hosts=new ArrayList<HostSpec>(); var vms=new ArrayList<VmSpec>(); var cloudlets=new ArrayList<CloudletSpec>();
+        int hostId=0;
+        for(var hostClass:spec.hostClasses()) for(int i=0;i<hostClass.count();i++)
+            hosts.add(new HostSpec(hostId++,hostClass.pes(),hostClass.mipsPerPe(),hostClass.ramMiB(),hostClass.bwMbps(),
+                hostClass.storageMiB(),hostClass.idleW(),hostClass.maxW()));
+        var demands=spec.vms();
+        for(int i=0;i<demands.count();i++) {
+            int pes=demands.pes().get(scenario.nextInt(demands.pes().size()));
+            long mips=demands.mipsPerPe().get(scenario.nextInt(demands.mipsPerPe().size()));
+            long ram=demands.ramMiB().get(scenario.nextInt(demands.ramMiB().size()));
+            long bw=demands.bwMbps().get(scenario.nextInt(demands.bwMbps().size()));
+            long storage=demands.storageMiB().get(scenario.nextInt(demands.storageMiB().size()));
+            int seconds=spec.workload().lengthSeconds().get(workload.nextInt(spec.workload().lengthSeconds().size()));
+            vms.add(new VmSpec(i,pes,mips,ram,bw,storage));
+            cloudlets.add(new CloudletSpec(i,i,pes,Math.multiplyExact(mips,seconds)));
+        }
+        return new Inputs(seeds,hosts,vms,cloudlets);
+    }
+    public static ScenarioSpec generateConfigured(long master,String phase,String name,int replication,GenerationSpec spec) {
+        var inputs=configuredInputs(master,phase,name,replication,spec);
+        Witness.validateNative(inputs);
+        var references=ScenarioObjects.measureReferences(inputs,referenceHosts(inputs));
+        for(int i=0;i<references.size();i++) if(references.get(i)!=(double)inputs.cloudlets().get(i).lengthMi()/inputs.vms().get(i).mipsPerPe())
+            throw new IllegalArgumentException("Measured isolated reference "+references.get(i)+" differs from the declared workload length for VM "+i);
+        return new ScenarioSpec(inputs,references);
+    }
+    /** Dedicated reference host sized to its own VM; an isolated full-utilization service time is capacity-independent. */
+    private static List<HostSpec> referenceHosts(Inputs inputs) {
+        var hosts=new ArrayList<HostSpec>();
+        for(var vm:inputs.vms())
+            hosts.add(new HostSpec(vm.id(),vm.pes(),vm.mipsPerPe(),vm.ramMiB(),vm.bwMbps(),vm.storageMiB(),175,250));
+        return hosts;
+    }
 }

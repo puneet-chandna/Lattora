@@ -17,7 +17,9 @@ public record ScenarioSpec(Inputs inputs, List<Double> referenceSeconds) {
             boolean legacy=List.of("main","sensitivity").contains(phase) && List.of("Micro","Small","Medium").contains(scenario);
             boolean stress=List.of("stress","stress_calibration").contains(phase) && scenario!=null
                 && scenario.matches("Static-V[1-9][0-9]*-H[1-9][0-9]*");
-            if((!legacy && !stress) || replication<0)
+            boolean configured=phase!=null && phase.equals("scenario") && scenario!=null
+                && scenario.matches("[a-z][a-z0-9._-]{0,63}");
+            if((!legacy && !stress && !configured) || replication<0)
                 throw new IllegalArgumentException("Invalid scenario identity");
             if(stress) {
                 int separator=scenario.indexOf("-H");
