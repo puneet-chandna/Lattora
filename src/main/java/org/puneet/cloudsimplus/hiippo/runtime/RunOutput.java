@@ -279,7 +279,7 @@ public final class RunOutput implements AutoCloseable {
                 if(PlacementObjective.watts(spec.inputs(),new PlacementPlan(ids))!=number(row,"objective_w")) throw new IllegalArgumentException("Stored objective does not match stored placement");
                 var metrics=new NativeMetrics.Result(number(row,"energy_j"),number(row,"energy_kwh"),Integer.parseInt(row.get("sla_violations")),number(row,"sla_rate"),
                     Integer.parseInt(row.get("completed_cloudlets")),Integer.parseInt(row.get("failed_cloudlets")),Integer.parseInt(row.get("censored_cloudlets")),number(row,"horizon_s"),
-                    ((Number)caseRows.get(index).get("release_s")).doubleValue());
+                    ((Number)caseRows.get(index).get("release_s")).doubleValue(),0.0);
                 validateMetrics(spec,metrics,Long.parseLong(row.get("allocation_wall_ns")));
                 int budget=key.population()==null?1:Search.budget(key.population(),key.iterations());
                 if(Integer.parseInt(row.get("evaluations"))!=budget) throw new IllegalArgumentException("Wrong evaluation count");

@@ -3,6 +3,7 @@ package org.puneet.cloudsimplus.hiippo.runtime;
 import com.google.gson.JsonSyntaxException;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
+import org.puneet.cloudsimplus.hiippo.placement.Objective;
 import org.puneet.cloudsimplus.hiippo.scenario.*;
 import java.io.IOException;
 import java.io.StringReader;
@@ -18,12 +19,13 @@ import java.util.*;
  * Every rejection is a single JSON-path-addressed sentence shared verbatim with the Python model.
  */
 public record ScenarioConfig(String name,long masterSeed,int replications,List<String> algorithms,
-                             SearchEffort optimizer,GenerationSpec generationSpec,Request request,
+                             SearchEffort optimizer,Objective objective,long powerMaxWSum,
+                             GenerationSpec generationSpec,Request request,
                              String configSha256,String canonicalJson) implements StaticCampaign {
     public static final int CONFIG_VERSION=1;
-    public static final int SCHEMA_VERSION=1;
+    public static final int SCHEMA_VERSION=2;
     public static final String PHASE="scenario";
-    public static final String PROTOCOL="static_scenario_v1";
+    public static final String PROTOCOL="static_scenario_v2";
     public static final String CONFIG_NAME="[a-z][a-z0-9._-]{0,63}";
     public static final List<String> CANONICAL_ALGORITHMS=List.of("HO","GA","FirstFit","BestFit");
     public static final String MODEL_LIMITS="Only constant full utilization (1.0), one cloudlet per VM, VmSchedulerSpaceShared, "
@@ -34,6 +36,8 @@ public record ScenarioConfig(String name,long masterSeed,int replications,List<S
         +"independently replay discarded candidates or guarantee detection of coherent non-best scalar tampering.";
     public static final String ALLOCATION_TIMING="End-to-end search including synchronous buffered scalar trace writing; "
         +"not pure CPU or directly comparable to frozen allocation timing.";
+    public static final int OBJECTIVE_VERSION=Objective.VERSION;
+    public static final String SLA_UNSUPPORTED="objective.kind sla is unsupported: constant full utilization predicts zero SLA violations for every feasible placement; use power, utilization or weighted until a contention model is supported";
     public static final int MAX_HOST_CLASSES=16, MAX_HOSTS=100000, MAX_VMS=100000, MAX_REPLICATIONS=10000,
         MAX_DECLARED_VALUES=4096, MIN_SECONDS=1, MAX_SECONDS=1440, EXACT_EVENT_DIVISOR=8;
 
@@ -55,15 +59,19 @@ public record ScenarioConfig(String name,long masterSeed,int replications,List<S
         Map.entry("bw_mbps",new int[]{1,Integer.MAX_VALUE}), Map.entry("storage_mib",new int[]{1,Integer.MAX_VALUE}),
         Map.entry("idle_w",new int[]{0,Integer.MAX_VALUE}));
     private static final List<String> HOST_KEYS=List.of("count","pes","mips_per_pe","ram_mib","bw_mbps","storage_mib","idle_w","max_w");
-    private static final List<String> TOP_KEYS=List.of("config_version","name","master_seed","replications","algorithms","optimizer","hosts","vms","workload");
+    private static final List<String> TOP_KEYS=List.of("config_version","name","master_seed","replications","algorithms","objective","optimizer","hosts","vms","workload");
     private static final List<String> OPTIMIZER_KEYS=List.of("population","iterations");
+    private static final List<String> OBJECTIVE_KEYS=List.of("kind","weights");
+    private static final List<String> WEIGHT_KEYS=List.of("power","utilization");
     private static final List<String> WORKLOAD_KEYS=List.of("length_seconds","utilization","release_seconds");
 
     public ScenarioConfig {
-        Objects.requireNonNull(name); Objects.requireNonNull(algorithms); Objects.requireNonNull(generationSpec);
-        Objects.requireNonNull(request); Objects.requireNonNull(configSha256); Objects.requireNonNull(canonicalJson);
+        Objects.requireNonNull(name); Objects.requireNonNull(algorithms); Objects.requireNonNull(objective);
+        Objects.requireNonNull(generationSpec); Objects.requireNonNull(request); Objects.requireNonNull(configSha256);
+        Objects.requireNonNull(canonicalJson);
         algorithms=List.copyOf(algorithms);
         if(replications<1 || replications>MAX_REPLICATIONS) throw new IllegalArgumentException("Invalid replication count");
+        if(powerMaxWSum<1) throw new IllegalArgumentException("Predicted power normalization must be positive");
         if(!sha256(request.bytes()).equals(configSha256))
             throw new IllegalArgumentException("Requested configuration does not match its recorded digest");
     }
@@ -103,11 +111,18 @@ public record ScenarioConfig(String name,long masterSeed,int replications,List<S
             throw new IllegalArgumentException("replications must be an integer from 1 to "+MAX_REPLICATIONS);
         int replications=number(document.get("replications")).intValueExact();
         List<String> algorithms=algorithms(document.get("algorithms"));
+        Objective objective=objective(document.get("objective"));
         SearchEffort optimizer=optimizer(document.get("optimizer"),algorithms);
         List<GenerationSpec.HostClass> hostClasses=hostClasses(document.get("hosts"));
-        int hostCount=0; for(var hostClass:hostClasses) hostCount=Math.addExact(hostCount,hostClass.count());
+        int hostCount=0; long powerMaxWSum=0;
+        for(var hostClass:hostClasses) {
+            hostCount=Math.addExact(hostCount,hostClass.count());
+            powerMaxWSum=Math.addExact(powerMaxWSum,Math.multiplyExact((long)hostClass.count(),hostClass.maxW()));
+        }
         if(hostCount<1 || hostCount>MAX_HOSTS)
             throw new IllegalArgumentException("total host count must be from 1 to "+MAX_HOSTS);
+        if(powerMaxWSum<1)
+            throw new IllegalArgumentException("hosts must declare a positive total max_w power ceiling");
         var vms=demands(document.get("vms"),hostClasses);
         var workload=workload(document.get("workload"));
         if((long)vms.count()*hostCount>Integer.MAX_VALUE)
@@ -132,10 +147,39 @@ public record ScenarioConfig(String name,long masterSeed,int replications,List<S
                 throw new IllegalArgumentException("total expected evaluations must not exceed "+Integer.MAX_VALUE);
         }
         var spec=new GenerationSpec(hostClasses,vms,workload);
-        return new ScenarioConfig(name,seed.longValueExact(),replications,algorithms,optimizer,spec,request,sha256,
-            canonical(name,seed.longValueExact(),replications,algorithms,optimizer,hostClasses,vms,workload));
+        return new ScenarioConfig(name,seed.longValueExact(),replications,algorithms,optimizer,objective,powerMaxWSum,
+            spec,request,sha256,canonical(name,seed.longValueExact(),replications,algorithms,optimizer,objective,
+            powerMaxWSum,hostClasses,vms,workload));
     }
 
+    private static Objective objective(Object value) {
+        if(value==null) return Objective.power();
+        if(!(value instanceof Map<?,?>)) throw new IllegalArgumentException("objective must be an object with a kind");
+        @SuppressWarnings("unchecked") var declared=unknown((Map<String,Object>)value,OBJECTIVE_KEYS,"objective");
+        Object rawKind=declared.get("kind");
+        if(!(rawKind instanceof String kind) || !List.of("power","utilization","sla","weighted").contains(kind))
+            throw new IllegalArgumentException("objective.kind must be one of power,utilization,sla,weighted");
+        if(kind.equals("sla")) throw new IllegalArgumentException(SLA_UNSUPPORTED);
+        Object rawWeights=declared.get("weights");
+        if(!kind.equals("weighted")) {
+            if(rawWeights!=null) throw new IllegalArgumentException("objective.weights is only valid when objective.kind is weighted");
+            return kind.equals("power")?Objective.power():Objective.utilization();
+        }
+        if(!(rawWeights instanceof Map<?,?>)) throw new IllegalArgumentException("objective.weights is required when objective.kind is weighted");
+        var weights=cast((Map<?,?>)rawWeights);
+        for(String key:weights.keySet()) {
+            if(key.equals("sla")) throw new IllegalArgumentException("objective.weights.sla is unsupported: constant full utilization cannot predict SLA differences");
+            if(!WEIGHT_KEYS.contains(key)) throw new IllegalArgumentException("unknown field: objective.weights."+key);
+        }
+        BigDecimal power=number(weights.get("power")), utilization=number(weights.get("utilization"));
+        if(power==null || utilization==null || !weight(power) || !weight(utilization)
+            || power.add(utilization).compareTo(BigDecimal.ONE)!=0)
+            throw new IllegalArgumentException("objective.weights must contain power and utilization numbers from 0.0 to 1.0 whose sum is exactly 1.0");
+        return Objective.weighted(power.doubleValue(),utilization.doubleValue());
+    }
+    private static boolean weight(BigDecimal value) {
+        return value.compareTo(BigDecimal.ZERO)>=0 && value.compareTo(BigDecimal.ONE)<=0;
+    }
     private static List<String> algorithms(Object value) {
         if(value==null) return CANONICAL_ALGORITHMS;
         if(!(value instanceof List<?> declared) || declared.isEmpty())
@@ -273,10 +317,21 @@ public record ScenarioConfig(String name,long masterSeed,int replications,List<S
         };
     }
     private static String canonical(String name,long masterSeed,int replications,List<String> algorithms,SearchEffort optimizer,
-                                    List<GenerationSpec.HostClass> hostClasses,GenerationSpec.VmDemands vms,GenerationSpec.Workload workload) {
+                                    Objective objective,long powerMaxWSum,List<GenerationSpec.HostClass> hostClasses,
+                                    GenerationSpec.VmDemands vms,GenerationSpec.Workload workload) {
         var document=new LinkedHashMap<String,Object>();
         document.put("config_version",CONFIG_VERSION); document.put("name",name); document.put("master_seed",masterSeed);
         document.put("replications",replications); document.put("algorithms",algorithms);
+        var objectiveRecord=new LinkedHashMap<String,Object>();
+        objectiveRecord.put("kind",objective.kindName()); objectiveRecord.put("version",OBJECTIVE_VERSION);
+        var weights=new LinkedHashMap<String,Object>();
+        weights.put("power",objective.powerWeight()); weights.put("utilization",objective.utilizationWeight());
+        objectiveRecord.put("weights",weights);
+        var normalization=new LinkedHashMap<String,Object>();
+        normalization.put("power",Objective.POWER_NORMALIZATION); normalization.put("power_max_w_sum",powerMaxWSum);
+        normalization.put("utilization",Objective.UTILIZATION_NORMALIZATION);
+        objectiveRecord.put("normalization",normalization);
+        document.put("objective",objectiveRecord);
         if(optimizer!=null) {
             var record=new LinkedHashMap<String,Object>(); record.put("population",optimizer.population()); record.put("iterations",optimizer.iterations());
             document.put("optimizer",record);
@@ -301,6 +356,7 @@ public record ScenarioConfig(String name,long masterSeed,int replications,List<S
 
     @Override public String phase() { return PHASE; }
     @Override public String scenarioName() { return name; }
+    @Override public Objective objective() { return objective; }
     @Override public Integer searchPopulation() { return optimizer==null?null:optimizer.population(); }
     @Override public Integer searchIterations() { return optimizer==null?null:optimizer.iterations(); }
     public Integer population() { return searchPopulation(); }
@@ -343,7 +399,15 @@ public record ScenarioConfig(String name,long masterSeed,int replications,List<S
         map.put("profile","scenario"); map.put("experiment.kind","static_scenario"); map.put("scenario.schema.version",Integer.toString(SCHEMA_VERSION));
         map.put("experiment.phase",PHASE); map.put("config.name",name); map.put("config.sha256",configSha256);
         map.put("master.seed",Long.toString(masterSeed)); map.put("replication.count",Integer.toString(replications));
-        map.put("algorithms",String.join(",",algorithms)); map.put("vm.count",Integer.toString(vmCount()));
+        map.put("algorithms",String.join(",",algorithms)); map.put("objective.kind",objective.kindName());
+        map.put("objective.version",Integer.toString(OBJECTIVE_VERSION));
+        map.put("objective.weights.power",Double.toString(objective.powerWeight()));
+        map.put("objective.weights.utilization",Double.toString(objective.utilizationWeight()));
+        map.put("objective.normalization.power",Objective.POWER_NORMALIZATION);
+        map.put("objective.normalization.power_max_w_sum",Long.toString(powerMaxWSum));
+        map.put("objective.normalization.utilization",Objective.UTILIZATION_NORMALIZATION);
+        map.put("objective.sla.model",Objective.SLA_MODEL);
+        map.put("vm.count",Integer.toString(vmCount()));
         map.put("host.count",Integer.toString(hostCount())); map.put("host.classes",Integer.toString(hostClassCount()));
         map.put("expected.cases",Integer.toString(expectedCases())); map.put("expected.evaluations",Integer.toString(expectedEvaluations()));
         map.put("utilization.model","constant_full"); map.put("utilization.value","1.0");

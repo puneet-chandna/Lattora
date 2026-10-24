@@ -41,4 +41,9 @@ public final class PlacementLedger {
         var h=inputs.hosts().get(host);
         return (used[host][1]==0?h.idleW():0)+(h.maxW()-h.idleW())*(inputs.vms().get(vm).totalMips()/(double)h.totalMips());
     }
+    /** Reserved MIPS fraction after admitting the VM; a placement-time quantity, never observed utilization. */
+    public double reservedFractionAfter(int vm,int host) {
+        if(!canPlace(vm,host)) throw new IllegalArgumentException("Infeasible placement");
+        return (used[host][1]+inputs.vms().get(vm).totalMips())/(double)inputs.hosts().get(host).totalMips();
+    }
 }

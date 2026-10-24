@@ -171,9 +171,15 @@ class ScenarioConfigTest {
     @Test void effectiveMapAndCanonicalKeyOrderAreComplete() {
         var config=resolve(tight());
         var expected=new TreeMap<String,String>();
-        expected.put("profile","scenario"); expected.put("experiment.kind","static_scenario"); expected.put("scenario.schema.version","1");
+        expected.put("profile","scenario"); expected.put("experiment.kind","static_scenario"); expected.put("scenario.schema.version","2");
         expected.put("experiment.phase","scenario"); expected.put("config.name","known-answer-tight"); expected.put("config.sha256",config.configSha256());
         expected.put("master.seed","123456"); expected.put("replication.count","1"); expected.put("algorithms","HO,GA,FirstFit,BestFit");
+        expected.put("objective.kind","power"); expected.put("objective.version","1");
+        expected.put("objective.weights.power","1.0"); expected.put("objective.weights.utilization","0.0");
+        expected.put("objective.normalization.power","sum_host_max_w");
+        expected.put("objective.normalization.power_max_w_sum","400");
+        expected.put("objective.normalization.utilization","reserved_peak_fraction");
+        expected.put("objective.sla.model","unsupported_constant_full");
         expected.put("vm.count","2"); expected.put("host.count","2"); expected.put("host.classes","1");
         expected.put("expected.cases","4"); expected.put("expected.evaluations","262"); expected.put("evaluation.budget","130");
         expected.put("optimizer.population","10"); expected.put("optimizer.iterations","4");
@@ -184,18 +190,67 @@ class ScenarioConfigTest {
         assertEquals(2,config.vmCount()); assertEquals(2,config.hostCount()); assertEquals(1,config.hostClassCount());
         assertEquals("CONSTRUCTIBLE",config.feasibility().getFirst().kind());
         assertNull(config.feasibility().getFirst().reason());
+        assertTrue(config.canonicalJson().replaceAll("\\s+"," ").contains(
+            "\"objective\": { \"kind\": \"power\", \"version\": 1, \"weights\": { \"power\": 1.0, \"utilization\": 0.0 },"),
+            config.canonicalJson());
         var document=new LinkedHashMap<String,Object>(tight());
         document.put("config_version",1); document.put("name","heterogeneous-hosts");
         var canonical=resolve(document).canonicalJson();
-        var order=List.of("config_version","name","master_seed","replications","algorithms","optimizer","population","iterations","hosts","count","pes","mips_per_pe","ram_mib","bw_mbps","storage_mib","idle_w","max_w","vms","workload","length_seconds","utilization","release_seconds");
+        var order=List.of("config_version","name","master_seed","replications","algorithms","objective","kind","version","weights",
+            "power","utilization","normalization","power_max_w_sum","optimizer","population","iterations","hosts","count","pes",
+            "mips_per_pe","ram_mib","bw_mbps","storage_mib","idle_w","max_w","vms","workload","length_seconds","utilization","release_seconds");
         int previous=-1;
         for(String key:order) {
-            int index=canonical.indexOf("\""+key+"\"");
+            int index=canonical.indexOf("\""+key+"\"",previous+1);
             assertTrue(index>previous,key+" must follow its predecessor in the canonical document");
             previous=index;
         }
         assertTrue(canonical.contains("\"utilization\": 1.0"),canonical);
         assertTrue(canonical.contains("\"release_seconds\": 0.0"),canonical);
+    }
+    @Test void objectivesAreVersionedValidatedAndRecorded() {
+        var defaults=resolve(tight());
+        assertEquals("power",defaults.objective().kindName());
+        assertEquals(1.0,defaults.objective().powerWeight()); assertEquals(0.0,defaults.objective().utilizationWeight());
+        assertEquals(400,defaults.powerMaxWSum());
+
+        var utilization=tight(); utilization.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","utilization")));
+        var selected=resolve(utilization);
+        assertEquals("utilization",selected.objective().kindName()); assertEquals(0.0,selected.objective().powerWeight());
+        assertEquals(1.0,selected.objective().utilizationWeight());
+        assertTrue(selected.canonicalJson().contains("\"kind\": \"utilization\""));
+
+        var weights=new LinkedHashMap<String,Object>(); weights.put("power",0.4); weights.put("utilization",0.6);
+        var weighted=tight(); weighted.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","weighted","weights",weights)));
+        var combined=resolve(weighted);
+        assertEquals("weighted",combined.objective().kindName()); assertEquals(0.4,combined.objective().powerWeight());
+        assertEquals(0.6,combined.objective().utilizationWeight());
+        assertEquals("0.4",combined.effective().get("objective.weights.power"));
+        assertEquals("0.6",combined.effective().get("objective.weights.utilization"));
+
+        rejects(ScenarioConfig.SLA_UNSUPPORTED,d->d.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","sla"))));
+        rejects("objective must be an object with a kind",d->d.put("objective","power"));
+        rejects("unknown field: objective.bogus",d->d.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","power","bogus",1))));
+        rejects("objective.kind must be one of power,utilization,sla,weighted",d->d.put("objective",new LinkedHashMap<String,Object>(Map.of())));
+        rejects("objective.kind must be one of power,utilization,sla,weighted",d->d.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","energy"))));
+        rejects("objective.weights is only valid when objective.kind is weighted",
+            d->d.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","power","weights",weights))));
+        rejects("objective.weights is required when objective.kind is weighted",
+            d->d.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","weighted"))));
+        rejects("objective.weights is required when objective.kind is weighted",
+            d->d.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","weighted","weights",1))));
+        rejects("unknown field: objective.weights.bogus",d->{
+            var bad=new LinkedHashMap<String,Object>(Map.of("power",0.5,"utilization",0.5,"bogus",0));
+            d.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","weighted","weights",bad))); });
+        rejects("objective.weights.sla is unsupported: constant full utilization cannot predict SLA differences",d->{
+            var bad=new LinkedHashMap<String,Object>(Map.of("power",0.5,"utilization",0.5,"sla",0));
+            d.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","weighted","weights",bad))); });
+        var malformed="objective.weights must contain power and utilization numbers from 0.0 to 1.0 whose sum is exactly 1.0";
+        rejects(malformed,d->d.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","weighted","weights",Map.of("power",0.5)))));
+        rejects(malformed,d->d.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","weighted","weights",Map.of("power",0.4,"utilization",0.4)))));
+        rejects(malformed,d->d.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","weighted","weights",Map.of("power",-0.1,"utilization",1.1)))));
+        rejects(malformed,d->d.put("objective",new LinkedHashMap<String,Object>(Map.of("kind","weighted","weights",Map.of("power",0.6,"utilization",0.5)))));
+        rejects("hosts must declare a positive total max_w power ceiling",d->{host(d).put("idle_w",0); host(d).put("max_w",0);});
     }
     @Test void knownAnswerPresetsClassifyAsDocumented() {
         assertEquals("CONSTRUCTIBLE",resolve(tight()).feasibility().getFirst().kind());

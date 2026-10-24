@@ -117,9 +117,10 @@ public final class StressOutput implements CampaignEvidence {
             spec==null?null:spec.fingerprint(),status,code,message,config.vmCount(),config.hostCount()));
         return row;
     }
-    public void success(ScenarioSpec spec,PlacementPlan plan,double watts,int count,NativeMetrics.Result metrics,long nanos) throws IOException {
+    public void success(ScenarioSpec spec,PlacementPlan plan,PlacementObjective.Score score,int count,NativeMetrics.Result metrics,long nanos) throws IOException {
+        double watts=score.powerW();
         if(current==null || count!=(current.population()==null?1:config.evaluationBudget()) || caseEvaluations!=(current.population()==null?0:count)
-            || !Double.isFinite(watts) || watts!=PlacementObjective.watts(spec.inputs(),plan)
+            || !Double.isFinite(watts) || !score.equals(PlacementObjective.score(spec.inputs(),plan,Objective.power()))
             || current.population()!=null && !Objects.equals(best,watts) || nanos<0) throw new IllegalArgumentException("Invalid stress result");
         for(double value:new double[]{metrics.energyJ(),metrics.energyKwh(),metrics.slaRate(),metrics.horizonSeconds(),metrics.releaseSeconds()})
             if(!Double.isFinite(value)) throw new IllegalArgumentException("Nonfinite metric");

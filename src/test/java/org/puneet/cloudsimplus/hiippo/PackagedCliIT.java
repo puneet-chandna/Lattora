@@ -208,11 +208,16 @@ class PackagedCliIT {
             var directory=dirs.findFirst().orElseThrow();
             var manifest=JsonParser.parseString(Files.readString(directory.resolve("run.json"))).getAsJsonObject();
             assertEquals("COMPLETE",manifest.get("state").getAsString());
-            assertEquals("static_scenario_v1",manifest.get("protocol").getAsString());
-            assertEquals(1,manifest.get("scenario_schema_version").getAsInt());
+            assertEquals("static_scenario_v2",manifest.get("protocol").getAsString());
+            assertEquals(2,manifest.get("scenario_schema_version").getAsInt());
             assertEquals(4,manifest.get("successful_cases").getAsInt());
             assertTrue(manifest.get("artifact_sha256").getAsString().matches("[a-f0-9]{64}"));
-            for(var row:scientificRows(directory,"raw/cases.csv")) assertEquals("400.0",row.get("objective_w"));
+            for(var row:scientificRows(directory,"raw/cases.csv")) {
+                assertEquals("power",row.get("objective_kind"));
+                assertEquals("1",row.get("objective_version"));
+                assertEquals("400.0",row.get("predicted_power_w"));
+                assertEquals("1.0",row.get("objective_score"));
+            }
             validate(directory,"scenario_validator.py");
         }
         Files.writeString(temp.resolve("unknown.json"),Files.readString(temp.resolve("tight.json")).replace("\"replications\":1,","\"replications\":1,\"bogus\":2,"));

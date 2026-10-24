@@ -99,13 +99,16 @@ jobs:
         run: |
           ./lattora.sh --profile scenario --preset known-answer-tight --workers 1 --plain --output-dir .cloudsim/ci/scenario
           ./lattora.sh validate .cloudsim/ci/scenario/scenario-* --plain --output-dir .cloudsim/ci/scenario-validation
+          ./lattora.sh --profile scenario --preset known-answer-tradeoff --workers 1 --plain --output-dir .cloudsim/ci/tradeoff
+          ./lattora.sh validate .cloudsim/ci/tradeoff/scenario-* --plain --output-dir .cloudsim/ci/tradeoff-validation
           .cloudsim/venv/bin/python -B - <<'PY'
           import json
           from pathlib import Path
-          metadata = json.loads(next(Path('.cloudsim/ci/scenario').glob('scenario-*/runner.json')).read_text())
-          assert metadata['status'] == 'complete' and metadata['validation'] == 'PASS'
-          report = json.loads(next(Path('.cloudsim/ci/scenario-validation').glob('validate-*/runner.json')).read_text())
-          assert report['validation'] == 'PASS' and report['exit_code'] == 0
+          for run_dir, validate_dir in [('scenario', 'scenario-validation'), ('tradeoff', 'tradeoff-validation')]:
+              metadata = json.loads(next(Path(f'.cloudsim/ci/{run_dir}').glob('scenario-*/runner.json')).read_text())
+              assert metadata['status'] == 'complete' and metadata['validation'] == 'PASS'
+              report = json.loads(next(Path(f'.cloudsim/ci/{validate_dir}').glob('validate-*/runner.json')).read_text())
+              assert report['validation'] == 'PASS' and report['exit_code'] == 0
           PY
 
   release-smoke:

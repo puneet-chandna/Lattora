@@ -11,7 +11,8 @@ public final class NativeMetrics {
     /** Absolute native times; null start/terminal means not observed by the censor. */
     public record Observation(double submission,Double start,Double terminal,boolean success) {}
     public record Result(double energyJ,double energyKwh,int slaViolations,double slaRate,
-                         int completed,int failed,int censored,double horizonSeconds,double releaseSeconds) {}
+                         int completed,int failed,int censored,double horizonSeconds,double releaseSeconds,
+                         double observedUtilization) {}
 
     public static Result run(ScenarioSpec spec,PlacementPlan plan) {
         if(Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("Case simulation cancelled");
@@ -97,18 +98,24 @@ public final class NativeMetrics {
             events.computeIfAbsent(start,k->new long[hostCount])[host]+=mips;
             events.computeIfAbsent(end,k->new long[hostCount])[host]-=mips;
         }
-        double energy=0,previous=0; long[] active=new long[hostCount];
+        double energy=0,previous=0,utilizedMipsSeconds=0; long totalCapacity=0; long[] active=new long[hostCount];
+        for(var host:spec.inputs().hosts()) totalCapacity=Math.addExact(totalCapacity,host.totalMips());
         for(var event:events.entrySet()) {
             double interval=event.getKey()-previous;
             for(var host:spec.inputs().hosts()) if(used[host.id()]) {
                 double utilization=(double)active[host.id()]/host.totalMips();
                 if(utilization<0 || utilization>1) throw new IllegalArgumentException("Invalid actual CPU utilization");
                 energy+=(host.idleW()+(host.maxW()-host.idleW())*utilization)*interval;
+                utilizedMipsSeconds+=active[host.id()]*interval;
                 active[host.id()]+=event.getValue()[host.id()];
             }
             previous=event.getKey();
         }
         if(!Double.isFinite(energy) || energy<=0) throw new IllegalArgumentException("Invalid integrated energy");
-        return new Result(energy,energy/3_600_000.0,violations,(double)violations/count,completed,failed,censored,horizon,release);
+        double observedUtilization=utilizedMipsSeconds/(totalCapacity*horizon);
+        if(!Double.isFinite(observedUtilization) || observedUtilization<0 || observedUtilization>1+1e-12)
+            throw new IllegalArgumentException("Invalid observed utilization");
+        return new Result(energy,energy/3_600_000.0,violations,(double)violations/count,completed,failed,censored,horizon,release,
+            Math.min(1.0,observedUtilization));
     }
 }

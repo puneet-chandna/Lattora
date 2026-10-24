@@ -58,7 +58,7 @@ def _safe_tree(root):
 def _kind(run):
     data = load(run/'run.json')
     if 'scenario_schema_version' in data:
-        require(type(data['scenario_schema_version']) is int and data['scenario_schema_version']==1
+        require(type(data['scenario_schema_version']) is int and data['scenario_schema_version']==2
                 and data.get('experiment_kind')=='static_scenario' and data.get('profile')=='scenario'
                 and not {'schema_version','stress_schema_version'} & data.keys(), 'Unsupported scenario schema')
         kind = 'scenario'
@@ -94,12 +94,12 @@ def _stress_config(data):
     return config
 
 
-def _scenario_config(metadata):
+def _scenario_config(metadata,request):
     """Re-resolve the recorded scenario request through the Python configuration model."""
     resolved=metadata.get('resolved_config')
     require(isinstance(resolved,dict), 'Missing scenario resolved configuration')
     try:
-        check=scenario.resolve_config(resolved)
+        check=scenario.resolve_config(scenario.load_config(request))
     except scenario.ConfigError as error:
         raise ValueError(f'Invalid recorded scenario configuration: {error}') from error
     require(check==resolved, 'Recorded resolved configuration differs from the Python resolution')
@@ -139,7 +139,6 @@ def _inspect(directory):
         require(_kind(run)=='statistics', 'Wrong frozen experiment schema')
         targets.append((run,'statistics'))
     elif profile == 'scenario':
-        resolved=_scenario_config(metadata)
         record=metadata.get('production')
         require(isinstance(record,dict) and record.get('phase')=='scenario' and record.get('validation')=='PASS',
                 'Incomplete scenario campaign block')
@@ -147,6 +146,10 @@ def _inspect(directory):
         block=_inside(root,'production')
         require(_inside(root,record.get('directory'))==block, 'Campaign block path mismatch')
         parent=_inside(root,block/'artifacts')
+        artifacts=[path for path in parent.iterdir()]
+        require(len(artifacts)==1 and artifacts[0].is_dir() and not artifacts[0].is_symlink(),
+                'Expected exactly one new scenario artifact')
+        resolved=_scenario_config(metadata,artifacts[0]/'config'/'requested.json')
         run=scenario.completed_run(parent,digest,resolved)
         require(_inside(root,record.get('run_directory'))==run, 'Campaign run path mismatch')
         require(_kind(run)=='scenario', 'Wrong scenario experiment schema')

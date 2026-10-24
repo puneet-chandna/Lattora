@@ -223,7 +223,10 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(data['resolved_config']['workload']['length_seconds'], [60])
         self.assertEqual(data['effective_config']['config.name'], 'known-answer-tight')
         self.assertEqual(data['effective_config']['experiment.kind'], 'static_scenario')
-        self.assertEqual(data['effective_config']['scenario.schema.version'], '1')
+        self.assertEqual(data['effective_config']['scenario.schema.version'], '2')
+        self.assertEqual(data['effective_config']['objective.kind'], 'power')
+        self.assertEqual(data['effective_config']['objective.version'], '1')
+        self.assertEqual(data['effective_config']['objective.normalization.power_max_w_sum'], '400')
         self.assertEqual(data['effective_config']['workload.length.seconds'], '60,60')
         self.assertEqual(len(data['commands']['java']), 1)
         command=data['commands']['java'][0]

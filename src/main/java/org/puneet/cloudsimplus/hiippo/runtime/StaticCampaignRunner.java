@@ -29,7 +29,7 @@ public final class StaticCampaignRunner {
                         }
                         code="RUN_ERROR";
                         var result=evaluate(campaign,spec,key,output::evaluation,phase->{});
-                        code="OUTPUT_ERROR"; output.success(spec,result.plan(),result.watts(),result.evaluations(),result.metrics(),result.nanos());
+                        code="OUTPUT_ERROR"; output.success(spec,result.plan(),result.score(),result.evaluations(),result.metrics(),result.nanos());
                     } catch(Exception e) {
                         code=rejectedCode(e,code);
                         try { output.failed(spec,code,e.toString()); } catch(Exception diagnostic) { e.addSuppressed(diagnostic); }
@@ -50,7 +50,7 @@ public final class StaticCampaignRunner {
         return new Profile.CaseKey(campaign.phase(),campaign.scenarioName(),replication,algorithm,
             search?campaign.searchPopulation():null,search?campaign.searchIterations():null);
     }
-    record CaseResult(PlacementPlan plan,double watts,int evaluations,NativeMetrics.Result metrics,long nanos) {}
+    record CaseResult(PlacementPlan plan,PlacementObjective.Score score,int evaluations,NativeMetrics.Result metrics,long nanos) {}
     @FunctionalInterface interface CaseRunner {
         CaseResult run(StaticCampaign campaign,ScenarioSpec spec,Profile.CaseKey key,Search.EvaluationSink sink,Consumer<String> phase) throws Exception;
     }
@@ -73,24 +73,24 @@ public final class StaticCampaignRunner {
     private static CaseResult evaluate(StaticCampaign campaign,ScenarioSpec spec,Profile.CaseKey key,Search.EvaluationSink sink,Consumer<String> phase) throws Exception {
         String code="RUN_ERROR";
         try {
-            PlacementPlan plan; double watts; int evaluations; long start=System.nanoTime();
+            PlacementPlan plan; PlacementObjective.Score score; int evaluations; long start=System.nanoTime();
             if(key.population()!=null) {
                 phase.accept("optimizing");
                 long seed=Seeds.derive(campaign.masterSeed(),key.phase(),key.scenario(),key.replication(),"optimizer",key.algorithm());
-                var search=Search.runStreaming(spec.inputs(),Search.Algorithm.valueOf(key.algorithm()),key.population(),key.iterations(),seed,sink);
+                var search=Search.runStreaming(spec.inputs(),Search.Algorithm.valueOf(key.algorithm()),key.population(),key.iterations(),seed,campaign.objective(),sink);
                 code="ALGORITHM_NO_FEASIBLE_PLACEMENT";
                 var best=search.best().orElseThrow(()->new IllegalStateException("No feasible final placement"));
-                plan=best.plan(); watts=best.watts(); evaluations=search.evaluations();
+                plan=best.plan(); score=best.score(); evaluations=search.evaluations();
             } else {
                 var planned=key.algorithm().equals("FirstFit")?BaselinePlanner.firstFit(spec.inputs()):BaselinePlanner.bestFit(spec.inputs());
                 code="ALGORITHM_NO_FEASIBLE_PLACEMENT";
                 var best=planned.orElseThrow(()->new IllegalStateException("No feasible final placement"));
-                plan=best.plan(); watts=best.objectiveWatts(); evaluations=best.evaluations();
+                plan=best.plan(); score=PlacementObjective.score(spec.inputs(),plan,campaign.objective()); evaluations=best.evaluations();
             }
             long nanos=System.nanoTime()-start;
             code="RUN_ERROR";
             phase.accept("simulating");
-            return new CaseResult(plan,watts,evaluations,NativeMetrics.run(spec,plan),nanos);
+            return new CaseResult(plan,score,evaluations,NativeMetrics.run(spec,plan),nanos);
         } catch(Exception e) { throw new CaseFailure(e instanceof java.io.IOException?"OUTPUT_ERROR":code,e); }
     }
     static Path executeParallel(StaticCampaign campaign,CampaignEvidence output) throws Exception {
@@ -141,7 +141,7 @@ public final class StaticCampaignRunner {
                             });
                             var live=work.progress().get(); output.liveProgress(live.phase(),live.evaluation());
                             EvaluationSpool.replay(work.spool(),output::evaluation); replayed=true;
-                            output.success(work.spec(),result.plan(),result.watts(),result.evaluations(),result.metrics(),result.nanos());
+                            output.success(work.spec(),result.plan(),result.score(),result.evaluations(),result.metrics(),result.nanos());
                             Files.deleteIfExists(work.spool());
                         } catch(Exception e) {
                             executor.close();

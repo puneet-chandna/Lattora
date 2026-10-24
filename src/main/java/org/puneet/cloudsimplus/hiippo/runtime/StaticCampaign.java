@@ -1,5 +1,6 @@
 package org.puneet.cloudsimplus.hiippo.runtime;
 
+import org.puneet.cloudsimplus.hiippo.placement.Objective;
 import org.puneet.cloudsimplus.hiippo.scenario.ScenarioSpec;
 import java.util.*;
 
@@ -17,6 +18,8 @@ interface StaticCampaign {
     Integer searchPopulation();
     /** Iterations per search case; null when the campaign configures no search algorithm. */
     Integer searchIterations();
+    /** Placement objective used by every algorithm; frozen and stress campaigns stay on power. */
+    default Objective objective() { return Objective.power(); }
     ScenarioSpec specFor(Profile.CaseKey key);
     default boolean search(String algorithm) { return algorithm.equals("HO") || algorithm.equals("GA"); }
 }

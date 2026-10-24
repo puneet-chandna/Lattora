@@ -69,14 +69,18 @@ class ResultSummaryTests(unittest.TestCase):
         """A minimal complete scenario campaign mirroring the stress fixture shape."""
         self.manifest.update(experiment_kind='static_scenario',profile='scenario')
         self.manifest.pop('stress_schema_version')
-        self.manifest.update(scenario_schema_version=1,protocol='static_scenario_v1')
+        self.manifest.update(scenario_schema_version=2,protocol='static_scenario_v2',
+                             objective={'kind':'power','version':1})
         self.manifest['effective_config']={'vm.count':'2','host.count':'2','host.classes':'1',
                                             'replication.count':'1','algorithms':'HO,GA,FirstFit,BestFit',
-                                            'master.seed':'123456'}
+                                            'master.seed':'123456','objective.kind':'power','objective.version':'1'}
         self.manifest.update(expected_cases=4,successful_cases=4,completed_evaluations=262,expected_evaluations=262)
-        for row in self.rows: row['phase']='scenario'
+        for row in self.rows:
+            row['phase']='scenario';row['predicted_power_w']=row.pop('objective_w')
+            row['objective_kind']='power';row['objective_version']=1
         self.write_csv('raw/cases.csv',self.rows)
-        for mean in self.means: mean['phase']='scenario'
+        for mean in self.means:
+            mean['phase']='scenario';mean['predicted_power_mean_w']=mean.pop('objective_mean_w')
         self.write_csv('analysis/summary.csv',self.means)
         self.write_manifest()
         self.meta['profile']='scenario'

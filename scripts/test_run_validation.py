@@ -1,5 +1,6 @@
 """Existing-output validation: routing is not a substitute for independent checks."""
 import importlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -89,17 +90,20 @@ class ExistingValidationTests(unittest.TestCase):
         jar = self.root/'scenario.jar'; jar.write_bytes(b'fixture jar')
         digest = shared.sha256(jar)
         resolved = scenario.resolve_config(scenario.request_json(scenario.PRESETS['known-answer-tight']))
-        recorded = scenario.request_digest(resolved)
+        request = json.dumps(scenario.request_json(scenario.PRESETS['known-answer-tight']), indent=2).encode() + b'\n'
+        recorded = hashlib.sha256(request).hexdigest()
         run = self.root/'production'/'artifacts'/'scenario-fixture'
         plan = scenario.planned_work(resolved)
-        manifest = dict(experiment_kind='static_scenario', scenario_schema_version=1,
+        manifest = dict(experiment_kind='static_scenario', scenario_schema_version=2,
                         protocol=scenario.PROTOCOL, profile='scenario', config_name=resolved['name'],
                         config_sha256=recorded, state='COMPLETE', error=None, artifact_sha256=digest,
-                        master_seed=resolved['master_seed'],
+                        master_seed=resolved['master_seed'], objective=resolved['objective'],
                         expected_cases=plan['expected_cases'], attempted_cases=plan['expected_cases'],
                         successful_cases=plan['expected_cases'], failed_cases=0, unattempted_cases=0,
                         expected_evaluations=plan['expected_evaluations'],
                         completed_evaluations=plan['expected_evaluations'],
+                        expected_simulations=plan['expected_cases'],
+                        completed_simulations=plan['expected_cases'], search_simulations=0,
                         resolved_config=resolved, effective_config=scenario.effective(resolved, recorded),
                         feasibility=scenario.feasibilities(resolved))
         self.write(run/'run.json', manifest)
@@ -111,7 +115,7 @@ class ExistingValidationTests(unittest.TestCase):
                                         run_directory=str(run)), run_directory=str(run))
         self.write(self.root/'runner.json', metadata)
         self.write(run/'config/resolved.json', resolved)
-        (run/'config/requested.json').write_text(json.dumps(resolved, indent=2) + '\n')
+        (run/'config/requested.json').write_bytes(request)
         self.assertEqual(self.validation.validation_targets(self.root), [(run, 'scenario')])
         for case, mutate in [
             ('calibration', lambda data: data.__setitem__('calibration', [{}])),
@@ -128,7 +132,7 @@ class ExistingValidationTests(unittest.TestCase):
                 manifest2 = json.loads(json.dumps(manifest)); manifest2['artifact_sha256'] = data['artifact_sha256']
                 self.write(run2/'run.json', manifest2)
                 self.write(run2/'config/resolved.json', resolved)
-                (run2/'config/requested.json').write_text(json.dumps(resolved, indent=2) + '\n')
+                (run2/'config/requested.json').write_bytes(request)
                 data['production']['run_directory'] = str(run2); data['run_directory'] = str(run2)
                 mutate(data)
                 self.write(self.root/'runner.json', data)

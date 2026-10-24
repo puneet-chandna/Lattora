@@ -157,7 +157,7 @@ class RunCoordinatorTest {
                 assertThrows(Exception.class,()->RunCoordinator.execute(config,output,(spec,key)->{
                     var r=RunCoordinator.evaluate(spec,key); var m=r.metrics();
                     return new RunCoordinator.CaseResult(r.plan(),objective?r.objectiveWatts()+1:r.objectiveWatts(),r.evaluations(),r.trace(),
-                        objective?m:new NativeMetrics.Result(Double.NaN,m.energyKwh(),m.slaViolations(),m.slaRate(),m.completed(),m.failed(),m.censored(),m.horizonSeconds(),m.releaseSeconds()),r.allocationNanos());
+                        objective?m:new NativeMetrics.Result(Double.NaN,m.energyKwh(),m.slaViolations(),m.slaRate(),m.completed(),m.failed(),m.censored(),m.horizonSeconds(),m.releaseSeconds(),0.0),r.allocationNanos());
                 }));
                 assertEquals("FAILED",manifest(output.directory()).get("state").getAsString());
                 var row=csv(output.directory().resolve("raw/main_results.csv")).getFirst();
