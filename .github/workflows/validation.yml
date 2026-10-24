@@ -50,7 +50,7 @@ jobs:
         env:
           MAVEN_ARGS: ''
         run: |
-          ./lattora.sh --profile scenario --preset known-answer-tradeoff --workers 1 --plain --output-dir target/ci-tradeoff
+          ./lattora.sh --profile scenario --preset known-answer-tradeoff --workers 1 --plain --skip-build --output-dir target/ci-tradeoff
           run=$(echo target/ci-tradeoff/scenario-*)
           artifact=$(echo "$run"/production/artifacts/scenario-*)
           python3 scripts/scenario_validator.py "$artifact"
