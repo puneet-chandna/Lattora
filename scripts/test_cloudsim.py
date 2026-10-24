@@ -119,6 +119,7 @@ class LauncherTests(unittest.TestCase):
                    ['--profile', 'stress', '--preset', 'known-answer-tight'],
                    ['--profile', 'smoke', '--preset', 'known-answer-tight'],
                    ['--profile', 'scenario', '--preset', 'known-answer-tight', '--preset', 'resource-pressure'],
+                   ['--profile', 'scenario', '--config', 'small'],
                    ['--profile', 'explore', '--preset', 'small'], ['--profile', 'research', '--vms', '3'],
                    ['--profile', 'stress', '--population', '3'], ['--profile', 'smoke', '--heap-mib', '511'],
                    ['--profile', 'smoke', '--output-dir', ' '], ['--check', '--config', 'missing']]

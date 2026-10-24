@@ -148,7 +148,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             parser.error('--config and --preset are mutually exclusive')
         if options.config is None and options.preset is None:
             parser.error('the scenario profile requires exactly one of --config or --preset')
-        if options.config is not None and options.config in stress.PRESETS:
+        if options.config is not None and str(options.config) in stress.PRESETS:
             parser.error(f'--config {options.config} is a stress preset; use --preset with --profile stress')
     elif options.profile in shared.FROZEN_PROFILES:
         if any('--'+field.replace('_', '-') in flags for field in STRESS_FLAGS):

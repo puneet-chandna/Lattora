@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import math
+from decimal import Decimal
 from pathlib import Path
 import re
 import shlex
@@ -269,11 +270,16 @@ class _Reader:
 
 
 def _number_value(literal):
-    """Exact ints for integral literals; a rounded exponent form stays float and fails the integer rules."""
+    """Java-parity numbers: integers stay exact, and a literal only becomes an integer when it names that integer."""
     if re.fullmatch(r'-?[0-9]+', literal):
         return int(literal)
     value = float(literal)
-    return int(value) if math.isfinite(value) and value.is_integer() else value
+    if math.isfinite(value) and value.is_integer() and Decimal(literal) == int(value):
+        return int(value)
+    # Keep the rounded float only when the literal names it exactly; otherwise carry the exact decimal.
+    if Decimal(literal) == Decimal(repr(value)):
+        return value
+    return Decimal(literal)
 
 
 def _parse(text):
@@ -306,12 +312,15 @@ def _integer(value, minimum, maximum):
         return False
     if isinstance(value, int):
         return minimum <= value <= maximum
-    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
-        return minimum <= value <= maximum
+    if isinstance(value, Decimal):
+        integral = value == value.to_integral_value()
+        number = int(value) if integral else None
+        return integral and minimum <= number <= maximum
     return False
 
 
 def _equals(value, expected):
+    """Exact equality on the parsed number, so a float64-rounded literal cannot pose as the constant."""
     return (not isinstance(value, bool) and isinstance(value, (int, float))
             and math.isfinite(value) and value == expected)
 
@@ -477,6 +486,15 @@ def _resolve(document):
         raise ConfigError(f'vms.count multiplied by total host count must not exceed {INT_MAX}')
     if replications * len(algorithms) > INT_MAX:
         raise ConfigError(f'replications multiplied by algorithms must not exceed {INT_MAX}')
+    worst_pes = max(vms['pes'])
+    worst_mips = max(vms['mips_per_pe'])
+    if any(worst_mips * seconds > LONG_MAX for seconds in workload['length_seconds']) or \
+            worst_pes * worst_mips * max(workload['length_seconds']) > LONG_MAX:
+        raise ConfigError("a VM's workload length in MI does not fit a signed 64-bit integer")
+    search = sum(1 for algorithm in algorithms if algorithm in SEARCH_ALGORITHMS)
+    budget = 0 if optimizer is None else optimizer['population'] + 3 * optimizer['population'] * optimizer['iterations']
+    if replications * (search * budget + len(algorithms) - search) > INT_MAX:
+        raise ConfigError(f'total expected evaluations must not exceed {INT_MAX}')
     resolved = {'config_version': CONFIG_VERSION, 'name': name, 'master_seed': master_seed,
                 'replications': replications, 'algorithms': algorithms}
     if optimizer is not None:
@@ -794,8 +812,17 @@ def progress(parent, resolved, deadline):
         evaluations, expected = data['completed_evaluations'], data['expected_evaluations']
         if any(type(value) is not int or value < 0 for value in (evaluations, expected)) or evaluations > expected:
             raise ValueError('invalid evaluation counters')
-        detail = (f'{active.get("algorithm", "?")} replication {active.get("replication", "?")} '
-                  f'evaluation {active.get("evaluation", "?")}; ' if active else '')
+        if active and active.get('computing_phase'):
+            detail = (f'{active.get("algorithm", "?")} replication {active.get("replication", "?")}: '
+                      f'{active["computing_phase"]}')
+            if active.get('computing_evaluation') is not None:
+                detail += f' computing evaluation {active["computing_evaluation"]}, iteration {active.get("computing_iteration", "?")} ({active.get("computing_stage", "?")})'
+            detail += '; published '
+        elif active:
+            detail = (f'{active.get("algorithm", "?")} replication {active.get("replication", "?")} '
+                      f'evaluation {active.get("evaluation", "?")}; ')
+        else:
+            detail = ''
         detail += f'evaluations {evaluations}/{expected}'
         return {'done': done, 'total': total, 'detail': detail, 'extra_lines': extra,
                 'evaluations': evaluations, 'evaluations_total': expected, **timing,

@@ -150,6 +150,10 @@ def _validate(directory):
     require(isinstance(m['files'], dict) and set(m['files']) == files, 'Wrong required files')
     for file in files:
         require(m['files'][file] == digest(directory / file), f'Hash mismatch: {file}')
+    # The run directory itself must contain exactly the recorded evidence; nothing unlisted.
+    listed = files | {'run.json', 'progress.json'}
+    require({str(found.relative_to(directory)) for found in directory.rglob('*') if found.is_file()} == listed,
+            'Unlisted evidence files in the run directory')
     summaries = {algorithm: [0, 0.0, 0.0, 0.0, 0.0] for algorithm in algorithms}
     case_rows = rows(directory / 'raw/cases.csv', CASE)
     placement_rows = rows(directory / 'raw/placements.csv', PLACE)

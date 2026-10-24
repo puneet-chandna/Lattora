@@ -114,6 +114,23 @@ public record ScenarioConfig(String name,long masterSeed,int replications,List<S
             throw new IllegalArgumentException("vms.count multiplied by total host count must not exceed "+Integer.MAX_VALUE);
         if((long)replications*algorithms.size()>Integer.MAX_VALUE)
             throw new IllegalArgumentException("replications multiplied by algorithms must not exceed "+Integer.MAX_VALUE);
+        long worstMips=0, worstSeconds=0, worstPes=0;
+        for(long value:vms.mipsPerPe()) worstMips=Math.max(worstMips,value);
+        for(long value:workload.lengthSeconds()) worstSeconds=Math.max(worstSeconds,value);
+        for(int value:vms.pes()) worstPes=Math.max(worstPes,value);
+        try {
+            for(long mips:vms.mipsPerPe()) for(long seconds:workload.lengthSeconds()) Math.multiplyExact(mips,seconds);
+            for(int pes:vms.pes()) Math.multiplyExact((long)pes,Math.multiplyExact(worstMips,worstSeconds));
+        } catch(ArithmeticException error) {
+            throw new IllegalArgumentException("a VM's workload length in MI does not fit a signed 64-bit integer",error);
+        }
+        if(optimizer!=null) {
+            int search=0, baseline=0;
+            for(String algorithm:algorithms) if(algorithm.equals("HO")||algorithm.equals("GA")) search++; else baseline++;
+            long budget=(long)optimizer.population()+3L*optimizer.population()*optimizer.iterations();
+            if((long)replications*(search*budget+baseline)>Integer.MAX_VALUE)
+                throw new IllegalArgumentException("total expected evaluations must not exceed "+Integer.MAX_VALUE);
+        }
         var spec=new GenerationSpec(hostClasses,vms,workload);
         return new ScenarioConfig(name,seed.longValueExact(),replications,algorithms,optimizer,spec,request,sha256,
             canonical(name,seed.longValueExact(),replications,algorithms,optimizer,hostClasses,vms,workload));
@@ -242,6 +259,8 @@ public record ScenarioConfig(String name,long masterSeed,int replications,List<S
             if(min==null || max==null || !integral(min) || !integral(max) || !fits(min,minimum,maximum) || !fits(max,minimum,maximum)
                 || min.longValueExact()>max.longValueExact())
                 throw new IllegalArgumentException(message);
+            // Count before expanding: a bounded range must never allocate before its own cap is checked.
+            if(max.subtract(min).longValueExact()+1>MAX_DECLARED_VALUES) throw new IllegalArgumentException(countMessage);
             for(long number=min.longValueExact();number<=max.longValueExact();number++) resolved.add(number);
         } else throw new IllegalArgumentException(message);
         if(resolved.size()>MAX_DECLARED_VALUES) throw new IllegalArgumentException(countMessage);
@@ -301,12 +320,18 @@ public record ScenarioConfig(String name,long masterSeed,int replications,List<S
         for(String algorithm:algorithms) if(this.search(algorithm)) search++; else baseline++;
         return Math.addExact(Math.multiplyExact(replications,Math.multiplyExact(search,evaluationBudget())),Math.multiplyExact(replications,baseline));
     }
-    /** Per-replication classification; deterministic RNG-only generation, no simulation. */
+    // Records cannot hold mutable state; memoize into a static map keyed by the immutable record value.
+    private static final Map<ScenarioConfig,List<Feasibility.Result>> CLASSIFICATIONS=new WeakHashMap<>();
+    /** Per-replication classification; deterministic RNG-only generation, no simulation, computed once per config. */
     public List<Feasibility.Result> feasibility() {
-        var results=new ArrayList<Feasibility.Result>();
-        for(int replication=0;replication<replications;replication++)
-            results.add(Feasibility.classify(ScenarioGenerator.configuredInputs(masterSeed,PHASE,name,replication,generationSpec),replication));
-        return List.copyOf(results);
+        var computed=CLASSIFICATIONS.get(this);
+        if(computed==null) {
+            computed=new ArrayList<Feasibility.Result>();
+            for(int replication=0;replication<replications;replication++)
+                computed.add(Feasibility.classify(ScenarioGenerator.configuredInputs(masterSeed,PHASE,name,replication,generationSpec),replication));
+            CLASSIFICATIONS.put(this,computed);
+        }
+        return computed;
     }
     @Override public ScenarioSpec specFor(Profile.CaseKey key) {
         var feasibility=feasibility().get(key.replication());

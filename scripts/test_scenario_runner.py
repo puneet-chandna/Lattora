@@ -834,6 +834,29 @@ class DryRun(unittest.TestCase):
         self.assertEqual(payload['warnings'], [])
         self.assertFalse((self.base/'dry').exists())
 
+    def test_resolve_time_evaluation_and_workload_bounds_are_enforced(self):
+        document = dict(runner.PRESETS['known-answer-tight'])
+        document['replications'] = 10000
+        document['optimizer'] = {'population': 2, 'iterations': 357913940}
+        with self.assertRaisesRegex(runner.ConfigError,
+                                    'total expected evaluations must not exceed 2147483647'):
+            runner.resolve_config(runner.request_json(document))
+        overflowing = dict(runner.PRESETS['known-answer-tight'],
+                           hosts=[{'count': 4, 'pes': 2147483647, 'mips_per_pe': 2147483640, 'ram_mib': 65536,
+                                   'bw_mbps': 20000, 'storage_mib': 2000000, 'idle_w': 220, 'max_w': 380}],
+                           vms={'count': 1, 'pes': [2147483647], 'mips_per_pe': [2147483640],
+                                'ram_mib': [1024], 'bw_mbps': [1000], 'storage_mib': [10000]})
+        with self.assertRaisesRegex(runner.ConfigError,
+                                    "a VM's workload length in MI does not fit a signed 64-bit integer"):
+            runner.resolve_config(runner.request_json(overflowing))
+        document = dict(runner.PRESETS['known-answer-tight'], vms={'count': 2, 'pes': [1],
+                           'mips_per_pe': [3000], 'ram_mib': [8192], 'bw_mbps': [2000], 'storage_mib': [20000]})
+        try:
+            runner.resolve_config(runner.request_json(dict(document, vms=dict(document['vms'], pes={'min': 1, 'max': 2147483647}))))
+            self.fail('expected the declared-values cap')
+        except runner.ConfigError as error:
+            self.assertIn('vms.pes must not declare more than 4096 values', str(error))
+
     def test_documented_presets_match_the_shipped_table(self):
         # A user copying SCENARIOS.md must get exactly the shipped preset.
         document = (runner.ROOT/'SCENARIOS.md').read_text(encoding='utf-8')

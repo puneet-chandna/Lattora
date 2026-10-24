@@ -100,6 +100,10 @@ class ScenarioConfigTest {
         rejects("unknown field: vms.ram_mib.minimum",d->map(d,"vms").put("ram_mib",new LinkedHashMap<String,Object>(Map.of("minimum",1024,"max",2048))));
         rejects("vms.pes must not declare more than 4096 values",d->{
             var values=new ArrayList<Object>(); for(int i=0;i<4097;i++) values.add(1); map(d,"vms").put("pes",values); });
+        rejects("vms.pes must not declare more than 4096 values",d->
+            map(d,"vms").put("pes",new LinkedHashMap<String,Object>(Map.of("min",1,"max",2147483647))));
+        rejects("vms.ram_mib must not declare more than 4096 values",d->
+            map(d,"vms").put("ram_mib",new LinkedHashMap<String,Object>(Map.of("min",1,"max",100000))));
         rejects("vms.mips_per_pe value 1500 must be a multiple of 8: the 0.125 s event interval must stay exact",d->map(d,"vms").put("mips_per_pe",new ArrayList<>(List.of(1500))));
         rejects("vms.pes value 4 exceeds every host class pes (2)",d->map(d,"vms").put("pes",new ArrayList<>(List.of(4))));
         rejects("workload.length_seconds must be a non-empty non-decreasing integer list or a min/max integer range from 1 to 1440",d->map(d,"workload").put("length_seconds",new ArrayList<>()));
@@ -112,6 +116,13 @@ class ScenarioConfigTest {
         rejects("workload.release_seconds must be 0.0: a single simultaneous release is the only simulated model",d->map(d,"workload").remove("release_seconds"));
         rejects("vms.count multiplied by total host count must not exceed 2147483647",d->{
             map(d,"vms").put("count",100000); host(d).put("count",100000); host(d).put("ram_mib",2147483647); });
+        rejects("total expected evaluations must not exceed 2147483647",d->{
+            d.put("replications",10000); map(d,"optimizer").put("population",2); map(d,"optimizer").put("iterations",357913940); });
+        rejects("a VM's workload length in MI does not fit a signed 64-bit integer",d->{
+            host(d).put("pes",2147483647); host(d).put("mips_per_pe",2147483640); host(d).put("ram_mib",65536);
+            host(d).put("bw_mbps",20000); host(d).put("storage_mib",2000000);
+            map(d,"vms").put("count",1); map(d,"vms").put("pes",new ArrayList<>(List.of(2147483647)));
+            map(d,"vms").put("mips_per_pe",new ArrayList<>(List.of(2147483640))); });
     }
     @Test void malformedDocumentsAreRejectedBeforeAnyValueRule() {
         rejects("unknown field: hosts[0].bogus",d->host(d).put("bogus",1));

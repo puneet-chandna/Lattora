@@ -164,6 +164,19 @@ class ScenarioValidatorTest(unittest.TestCase):
         self.mutate_csv('analysis/summary.csv',lambda rows:rows[1].__setitem__(rows[0].index('objective_mean_w'),'401.0'))
         with self.assertRaises(ValueError): validator.validate(self.directory)
 
+    def test_unlisted_evidence_files_are_rejected(self):
+        (self.directory/'notes.txt').write_text('stray payload')
+        with self.assertRaisesRegex(ValueError, 'Unlisted evidence files'):
+            validator.validate(self.directory)
+
+    def test_rehashed_placement_tampers_are_rejected(self):
+        # Both tight VMs saturate their own host, so any merge is infeasible.
+        self.mutate_csv('raw/placements.csv',lambda rows:rows[2].__setitem__(-1,'0'))
+        with self.assertRaises(ValueError): validator.validate(self.directory)
+        self.build()
+        self.mutate_csv('raw/placements.csv',lambda rows:rows[1].__setitem__(-1,'2'))
+        with self.assertRaises(ValueError): validator.validate(self.directory)
+
     def test_missing_file_missing_spec_and_counters_are_rejected(self):
         (self.directory/'raw/placements.csv').unlink()
         with self.assertRaises(ValueError): validator.validate(self.directory)

@@ -79,8 +79,10 @@ A declared `vms.<field>` maximum larger than every host class value for that fie
 rejected, because such a demand could never be admitted. Every rejection is one
 JSON-path-addressed sentence (for example `unknown field: hosts[0].bogus`,
 `duplicate field: name`, `vms.ram_mib value 16384 exceeds every host class ram_mib (8192)`)
-produced before any simulation starts; the Java engine and the independent Python model
-produce identical text for identical input. A missing or unreadable file is an I/O error
+produced before any simulation starts, and every one of those rule sentences is
+byte-identical in the Java engine and the independent Python model for the same input.
+Raw parse failures are engine-specific: both report them as `invalid JSON: <engine detail>`
+with no run directory created. A missing or unreadable file is an I/O error
 (`IO_ERROR`, exit 1); invalid content is a configuration error (`CONFIG_ERROR`, exit 2).
 Neither creates a run directory.
 
@@ -139,7 +141,7 @@ independent validator:
 | Class | Meaning | Effect |
 | --- | --- | --- |
 | `CONSTRUCTIBLE` | A constructive witness placed every VM: VM `i` on host `i mod hostCount`, with the same five-dimensional admission and per-PE rules as the planners. | The replication runs. |
-| `UNPROVED` | The summed demand fits, but the witness placement was rejected. This is an explicit gap between the necessary condition and a proof, never a silent success. | The replication is attempted and fails with `SCENARIO_REJECTED`; the reason names the first rejected host and dimension. |
+| `UNPROVED` | The summed demand fits, but the witness placement was rejected. This is an explicit gap between the necessary condition and a proof, never a silent success. | The replication is attempted and fails with `SCENARIO_REJECTED`, naming the first VM the witness could not place; the first rejected host and dimension are recorded in `feasibility[].reason`. |
 | `INFEASIBLE_PROVED` | A necessary condition already fails: total VM demand exceeds total host capacity in `pes`, `mips`, `ram_mib`, `bw_mbps`, `storage_mib` order, or a VM's per-PE MIPS exceeds the largest host class value. | The run stops before simulating that replication with `SCENARIO_INFEASIBLE` and the proof sentence. |
 
 Because the witness is a fixed round-robin placement, a declared `vms.mips_per_pe` value
