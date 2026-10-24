@@ -13,6 +13,7 @@ import sys
 
 import research_runner as shared
 import stress_runner as stress
+import scenario_runner as scenario
 from stress_validator import load, require
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +28,7 @@ def campaign_selection_error(metadata):
         return 'This is a validation report. Select the original experiment directory it checked.'
     if action and action!='profile':
         return f'This is a {shared.sanitize(action)} action; select a completed experiment.'
-    if metadata.get('profile') not in (*shared.FROZEN_PROFILES,'stress'):
+    if metadata.get('profile') not in (*shared.FROZEN_PROFILES,'stress','scenario'):
         return 'This directory has no supported experiment profile.'
     if metadata.get('status')!='complete' or type(metadata.get('exit_code')) is not int or metadata['exit_code']!=0 or metadata.get('validation')!='PASS':
         return 'The experiment is incomplete or unsuccessful. Select a completed experiment; partial evidence is available in Details.'
@@ -56,14 +57,20 @@ def _safe_tree(root):
 
 def _kind(run):
     data = load(run/'run.json')
-    if 'schema_version' in data:
-        require(not {'stress_schema_version','experiment_kind','experiment_phase'} & data.keys(), 'Mixed experiment schemas')
+    if 'scenario_schema_version' in data:
+        require(type(data['scenario_schema_version']) is int and data['scenario_schema_version']==1
+                and data.get('experiment_kind')=='static_scenario' and data.get('profile')=='scenario'
+                and not {'schema_version','stress_schema_version'} & data.keys(), 'Unsupported scenario schema')
+        kind = 'scenario'
+    elif 'schema_version' in data:
+        require(not {'stress_schema_version','scenario_schema_version','experiment_kind','experiment_phase'} & data.keys(), 'Mixed experiment schemas')
         require(type(data['schema_version']) is int and data['schema_version']==2, 'Unsupported research schema')
         require(isinstance(data.get('profile'),str) and data['profile'] in shared.FROZEN_PROFILES, 'Unsupported frozen profile')
         kind = 'statistics'
     else:
         require(type(data.get('stress_schema_version')) is int and data['stress_schema_version']==1
-                and data.get('experiment_kind')=='static_stress' and data.get('profile')=='stress', 'Unsupported stress schema')
+                and data.get('experiment_kind')=='static_stress' and data.get('profile')=='stress'
+                and 'scenario_schema_version' not in data, 'Unsupported stress schema')
         kind = 'stress'
     require(data.get('state')=='COMPLETE' and data.get('error') is None, 'Run is not complete')
     return kind
@@ -87,6 +94,23 @@ def _stress_config(data):
     return config
 
 
+def _scenario_config(metadata):
+    """Re-resolve the recorded scenario request through the Python configuration model."""
+    resolved=metadata.get('resolved_config')
+    require(isinstance(resolved,dict), 'Missing scenario resolved configuration')
+    try:
+        check=scenario.resolve_config(resolved)
+    except scenario.ConfigError as error:
+        raise ValueError(f'Invalid recorded scenario configuration: {error}') from error
+    require(check==resolved, 'Recorded resolved configuration differs from the Python resolution')
+    effective=metadata.get('effective_config')
+    require(isinstance(effective,dict) and effective==scenario.effective(resolved,metadata.get('config_sha256')),
+            'Recorded effective configuration differs from the Python resolution')
+    require(metadata.get('feasibility')==scenario.feasibilities(resolved),
+            'Recorded feasibility differs from the Python classification')
+    return resolved
+
+
 def _inspect(directory):
     directory=Path(directory)
     require(directory.is_dir() and not directory.is_symlink(), 'Select a run or campaign directory, not a file or symlink')
@@ -102,7 +126,7 @@ def _inspect(directory):
     require(metadata.get('status')=='complete' and type(metadata.get('exit_code')) is int
             and metadata['exit_code']==0 and metadata.get('validation')=='PASS', 'Campaign is incomplete or unsuccessful')
     profile=metadata.get('profile')
-    require(profile in (*shared.FROZEN_PROFILES,'stress'), 'Unsupported campaign profile')
+    require(profile in (*shared.FROZEN_PROFILES,'stress','scenario'), 'Unsupported campaign profile')
     digest=metadata.get('artifact_sha256')
     require(isinstance(digest,str) and re.fullmatch('[0-9a-f]{64}',digest), 'Missing retained JAR hash')
     jar=_inside(root,profile+'.jar')
@@ -114,6 +138,20 @@ def _inspect(directory):
         require(_inside(root,metadata.get('run_directory'))==run, 'Campaign run path mismatch')
         require(_kind(run)=='statistics', 'Wrong frozen experiment schema')
         targets.append((run,'statistics'))
+    elif profile == 'scenario':
+        resolved=_scenario_config(metadata)
+        record=metadata.get('production')
+        require(isinstance(record,dict) and record.get('phase')=='scenario' and record.get('validation')=='PASS',
+                'Incomplete scenario campaign block')
+        require(metadata.get('calibration') is None, 'Scenario campaigns do not run calibration blocks')
+        block=_inside(root,'production')
+        require(_inside(root,record.get('directory'))==block, 'Campaign block path mismatch')
+        parent=_inside(root,block/'artifacts')
+        run=scenario.completed_run(parent,digest,resolved)
+        require(_inside(root,record.get('run_directory'))==run, 'Campaign run path mismatch')
+        require(_kind(run)=='scenario', 'Wrong scenario experiment schema')
+        targets.append((run,'scenario'))
+        require(_inside(root,metadata.get('run_directory'))==targets[-1][0], 'Production run path mismatch')
     else:
         config=_stress_config(metadata.get('effective_config'))
         pilots=stress.calibrations(config)

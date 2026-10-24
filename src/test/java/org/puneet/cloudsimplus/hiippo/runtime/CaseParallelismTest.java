@@ -21,6 +21,9 @@ class CaseParallelismTest {
         finally { if(previous==null) System.clearProperty("cloudsim.workers"); else System.setProperty("cloudsim.workers",previous); }
     }
     @FunctionalInterface private interface ThrowingAction { void run() throws Exception; }
+    private static Path stress(StressConfig config) throws Exception {
+        try(var output=StressOutput.create(config)) { return StaticCampaignRunner.execute(config,output); }
+    }
     private List<Map<String,String>> scientific(Path file) throws Exception {
         try(var reader=Files.newBufferedReader(file); var parser=CSVFormat.DEFAULT.builder().setHeader().setSkipHeaderRecord(true).build().parse(reader)) {
             var result=new ArrayList<Map<String,String>>();
@@ -62,7 +65,7 @@ class CaseParallelismTest {
     @Test void stressScalarEvidenceAndScenarioPairingMatchSerialExecution() throws Exception {
         var directories=new ArrayList<Path>();
         var config=new StressConfig(10,3,4,2,3,123456,"stress",temp);
-        for(String count:List.of("1","3")) workers(count,()->directories.add(StressRun.execute(config)));
+        for(String count:List.of("1","3")) workers(count,()->directories.add(stress(config)));
         for(String file:List.of("raw/cases.csv","raw/placements.csv","raw/evaluations.csv","analysis/summary.csv"))
             assertEquals(scientific(directories.get(0).resolve(file)),scientific(directories.get(1).resolve(file)),file);
         for(int replication=0;replication<3;replication++) assertEquals(Files.readString(directories.get(0).resolve("scenarios/replication-"+replication+".json")),Files.readString(directories.get(1).resolve("scenarios/replication-"+replication+".json")));
@@ -72,7 +75,7 @@ class CaseParallelismTest {
     @Test void invalidWorkerSettingsAreRejectedBeforeCreatingRunArtifacts() throws Exception {
         for(String value:List.of("0","-1","33","auto","2.0"," 2","2147483648","")) workers(value,()->{
             assertThrows(IllegalArgumentException.class,()->RunOutput.create(new RunConfig(Profile.smoke,123456,"INFO",temp)));
-            assertThrows(IllegalArgumentException.class,()->StressRun.execute(new StressConfig(10,3,4,2,1,123456,"stress",temp)));
+            assertThrows(IllegalArgumentException.class,()->stress(new StressConfig(10,3,4,2,1,123456,"stress",temp)));
         });
         try(var files=Files.list(temp)) { assertEquals(0,files.count()); }
     }
@@ -133,7 +136,7 @@ class CaseParallelismTest {
         workers("2",()->{
             var config=new StressConfig(10,3,4,2,2,123456,"stress",temp); var entered=new CountDownLatch(1); var active=new AtomicInteger();
             try(var output=StressOutput.create(config)) {
-                assertTimeoutPreemptively(Duration.ofSeconds(5),()->assertThrows(Exception.class,()->StressRun.executeParallel(config,output,(c,spec,key,sink,phase)->{
+                assertTimeoutPreemptively(Duration.ofSeconds(5),()->assertThrows(Exception.class,()->StaticCampaignRunner.executeParallel(config,output,(c,spec,key,sink,phase)->{
                     active.incrementAndGet();
                     try {
                         if(key.algorithm().equals("HO")) {
@@ -171,7 +174,7 @@ class CaseParallelismTest {
             var failure=new java.util.concurrent.atomic.AtomicReference<Throwable>();
             try(var output=StressOutput.create(config)) {
                 var owner=new Thread(()->{
-                    try { StressRun.executeParallel(config,output,(c,spec,key,sink,phase)->{
+                    try { StaticCampaignRunner.executeParallel(config,output,(c,spec,key,sink,phase)->{
                         if(key.algorithm().equals("HO")) {
                             sink.accept(new Search.Evaluation(1,0,"INITIAL",0,true,100.0,true,100.0));
                             firstEvaluation.countDown();
@@ -210,7 +213,7 @@ class CaseParallelismTest {
             var nextHoStarted=new CountDownLatch(1); var active=new AtomicInteger(); var activeHo=new AtomicInteger();
             var maximum=new AtomicInteger(); var maximumHo=new AtomicInteger();
             try(var output=StressOutput.create(config)) {
-                assertTimeoutPreemptively(Duration.ofSeconds(5),()->assertThrows(Exception.class,()->StressRun.executeParallel(config,output,(c,spec,key,sink,phase)->{
+                assertTimeoutPreemptively(Duration.ofSeconds(5),()->assertThrows(Exception.class,()->StaticCampaignRunner.executeParallel(config,output,(c,spec,key,sink,phase)->{
                     maximum.accumulateAndGet(active.incrementAndGet(),Math::max);
                     boolean ho=key.algorithm().equals("HO");
                     if(ho) maximumHo.accumulateAndGet(activeHo.incrementAndGet(),Math::max);

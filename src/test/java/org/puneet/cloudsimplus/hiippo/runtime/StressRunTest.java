@@ -10,6 +10,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class StressRunTest {
     @TempDir Path temp;
+    private static Path stress(StressConfig config) throws Exception {
+        try(var output=StressOutput.create(config)) { return StaticCampaignRunner.execute(config,output); }
+    }
     private static final String ID="stress_schema_version,run_id,phase,scenario,replication,algorithm,population,iterations";
     private static final String CASE=ID+",scenario_seed,workload_seed,optimizer_seed,scenario_sha256,status,error_code,error_message,vm_count,host_count,evaluations,objective_w,energy_j,energy_kwh,sla_violations,sla_rate,completed_cloudlets,failed_cloudlets,censored_cloudlets,horizon_s,release_s,allocation_wall_ns";
     private static final String PLACE=ID+",vm_id,host_id";
@@ -24,7 +27,7 @@ class StressRunTest {
     private JsonObject json(Path path) throws Exception { return JsonParser.parseString(Files.readString(path)).getAsJsonObject(); }
     @Test void pairedMatrixStreamsCanonicalEvidenceAndDeterministicScientificRows() throws Exception {
         var config=new StressConfig(10,3,4,2,2,123456,"stress",temp);
-        var dirs=List.of(StressRun.execute(config),StressRun.execute(config));
+        var dirs=List.of(stress(config),stress(config));
         var scientific=new ArrayList<List<Map<String,String>>>();
         for(var dir:dirs) {
             var m=json(dir.resolve("run.json"));
@@ -54,7 +57,7 @@ class StressRunTest {
         assertEquals(scientific.get(0),scientific.get(1));
     }
     @Test void rejectedWitnessRetainsFailedRunAndCurrentCase() throws Exception {
-        assertThrows(IllegalArgumentException.class,()->StressRun.execute(new StressConfig(100,1,4,2,2,123456,"stress",temp)));
+        assertThrows(IllegalArgumentException.class,()->stress(new StressConfig(100,1,4,2,2,123456,"stress",temp)));
         try(var dirs=Files.list(temp)) {
             var dir=dirs.findFirst().orElseThrow(); var m=json(dir.resolve("run.json"));
             assertEquals("FAILED",m.get("state").getAsString()); assertEquals(1,m.get("attempted_cases").getAsInt());

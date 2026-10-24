@@ -39,8 +39,9 @@ class LauncherTests(unittest.TestCase):
         for arguments, action in [([], None), (['--check'], 'check'), (['--build'], 'build'),
                                   (['--test'], 'test'), (['--validate', str(self.base)], 'validate')]:
             self.assertEqual(self.cli.parse_args(arguments).action, action)
-        for profile in ('smoke', 'explore', 'research', 'stress'):
-            args = self.cli.parse_args(['--profile', profile])
+        for profile in ('smoke', 'explore', 'research', 'stress', 'scenario'):
+            args = self.cli.parse_args(['--profile', profile, '--preset', 'known-answer-tight'] if profile == 'scenario'
+                                       else ['--profile', profile])
             self.assertEqual((args.action, args.profile), ('profile', profile))
 
     def test_workers_are_runtime_controls_and_force_build_is_explicit(self):
@@ -113,6 +114,12 @@ class LauncherTests(unittest.TestCase):
                    ['--pro', 'smoke'], ['--wat'], ['--build', '--dry-run'],
                    ['--check', '--skip-build'], ['--validate', str(self.base), '--heap-mib', '512'],
                    ['--profile', 'stress', '--config', 'missing'], ['--profile', 'smoke', '--seed', '2'],
+                   ['--profile', 'scenario'], ['--profile', 'scenario', '--preset', 'micro'],
+                   ['--profile', 'scenario', '--preset', 'known-answer-tight', '--vms', '4'],
+                   ['--profile', 'stress', '--preset', 'known-answer-tight'],
+                   ['--profile', 'smoke', '--preset', 'known-answer-tight'],
+                   ['--profile', 'scenario', '--preset', 'known-answer-tight', '--preset', 'resource-pressure'],
+                   ['--profile', 'scenario', '--config', 'small'],
                    ['--profile', 'explore', '--preset', 'small'], ['--profile', 'research', '--vms', '3'],
                    ['--profile', 'stress', '--population', '3'], ['--profile', 'smoke', '--heap-mib', '511'],
                    ['--profile', 'smoke', '--output-dir', ' '], ['--check', '--config', 'missing']]
@@ -204,10 +211,48 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue(data['warnings'])
         self.assertEqual(len(data['commands']['java']), 4)
 
+    def test_scenario_preview_reports_resolution_planned_work_and_feasibility(self):
+        args = self.cli.parse_args(['--profile', 'scenario', '--preset', 'known-answer-tight', '--dry-run',
+                                    '--output-dir', str(self.base)])
+        with patch.object(self.cli.shared, 'available_cpus', return_value=12):
+            data = self.cli.preview(args)
+        self.assertEqual(data['profile'], 'scenario')
+        self.assertEqual(data['planned_work'], {'expected_cases': 4, 'evaluation_budget': 130,
+                                                'expected_evaluations': 262})
+        self.assertEqual(data['feasibility'], [{'replication': 0, 'kind': 'CONSTRUCTIBLE', 'reason': None}])
+        self.assertEqual(data['resolved_config']['workload']['length_seconds'], [60])
+        self.assertEqual(data['effective_config']['config.name'], 'known-answer-tight')
+        self.assertEqual(data['effective_config']['experiment.kind'], 'static_scenario')
+        self.assertEqual(data['effective_config']['scenario.schema.version'], '1')
+        self.assertEqual(data['effective_config']['workload.length.seconds'], '60,60')
+        self.assertEqual(len(data['commands']['java']), 1)
+        command=data['commands']['java'][0]
+        self.assertEqual(command[command.index('--profile')+1], 'scenario')
+        self.assertEqual(command[-2:], ['--config', '<CONFIG>'])
+        self.assertEqual(data['time_limit_scope'], 'production + validation; excludes build/tests')
+        self.assertEqual(self.cli.runner_args(args)[-2:], ['--preset', 'known-answer-tight'])
+
+    def test_scenario_config_errors_stop_before_output(self):
+        path = self.base/'scenario.json'
+        path.write_text('{"config_version": 2}', encoding='utf-8')
+        for arguments in (['--profile', 'scenario', '--config', str(path)],
+                          ['--profile', 'scenario', '--config', str(self.base/'absent.json')]):
+            with self.subTest(arguments=arguments):
+                with redirect_stderr(io.StringIO()) as errors, self.assertRaises(SystemExit) as caught:
+                    self.cli.parse_args(arguments)
+                # The runner parser prints its own usage; only the message and exit code are contractual.
+                self.assertEqual(caught.exception.code, 2 if 'absent' not in str(arguments) else 1)
+                self.assertIn('config_version must be the integer 1' if 'absent' not in str(arguments)
+                              else 'config file is missing or unreadable', errors.getvalue())
+        self.assertFalse((self.base/'config.json').exists())
+
     def test_runner_dispatch_once_and_original_invocation(self):
-        for profile in ('smoke', 'explore', 'research', 'stress'):
-            args = self.cli.parse_args(['--profile', profile, '--skip-build', '--output-dir', str(self.base)])
-            target = self.cli.stress if profile == 'stress' else self.cli.shared
+        for profile in ('smoke', 'explore', 'research', 'stress', 'scenario'):
+            args = self.cli.parse_args((['--profile', profile, '--preset', 'known-answer-tight']
+                                        if profile == 'scenario' else ['--profile', profile])
+                                       + ['--skip-build', '--output-dir', str(self.base)])
+            target = (self.cli.scenario if profile == 'scenario'
+                      else self.cli.stress if profile == 'stress' else self.cli.shared)
             with patch.object(target, 'main', return_value=7) as run:
                 self.assertEqual(self.cli.execute(args), 7)
             self.assertEqual(run.call_count, 1)

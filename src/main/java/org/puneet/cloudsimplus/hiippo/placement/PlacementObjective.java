@@ -11,7 +11,7 @@ public final class PlacementObjective {
         for(var vm:inputs.vms()) mips[plan.hostIds().get(vm.id())]+=vm.totalMips();
         double total=0;
         for(var h:inputs.hosts()) if(mips[h.id()]>0)
-            total+=h.idleW()+(h.maxW()-h.idleW())*(mips[h.id()]/48000.0);
+            total+=h.idleW()+(h.maxW()-h.idleW())*(mips[h.id()]/(double)h.totalMips());
         return total;
     }
 }

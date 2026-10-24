@@ -11,7 +11,7 @@ import java.util.*;
 import java.util.jar.JarFile;
 
 /** Buffered case evidence with small atomic progress; no historical populations or specifications. */
-public final class StressOutput implements AutoCloseable {
+public final class StressOutput implements CampaignEvidence {
     private static final Gson JSON=new GsonBuilder().serializeNulls().setPrettyPrinting().create();
     private static final String ID="stress_schema_version,run_id,phase,scenario,replication,algorithm,population,iterations";
     private static final String CASE=ID+",scenario_seed,workload_seed,optimizer_seed,scenario_sha256,status,error_code,error_message,vm_count,host_count,evaluations,objective_w,energy_j,energy_kwh,sla_violations,sla_rate,completed_cloudlets,failed_cloudlets,censored_cloudlets,horizon_s,release_s,allocation_wall_ns";
@@ -34,7 +34,7 @@ public final class StressOutput implements AutoCloseable {
     private int workers;
     private StressOutput(StressConfig config,Path directory) { this.config=config; this.directory=directory; }
     public Path directory() { return directory; }
-    int workers() { return workers; }
+    public int workers() { return workers; }
     public static StressOutput create(StressConfig config) throws Exception {
         int workers=CaseExecutor.workers();
         Files.createDirectories(config.outputRoot());
@@ -81,11 +81,11 @@ public final class StressOutput implements AutoCloseable {
     private List<Object> identity() {
         return new ArrayList<>(Arrays.asList(1,manifest.get("run_id"),current.phase(),current.scenario(),current.replication(),current.algorithm(),current.population(),current.iterations()));
     }
-    void begin(Profile.CaseKey key) throws IOException {
+    public void begin(Profile.CaseKey key) throws IOException {
         if(current!=null || failed!=0 || !"RUNNING".equals(manifest.get("state")) || attempted>=config.expectedCases()) throw new IllegalStateException("Invalid stress lifecycle");
         current=key; caseEvaluations=0; best=null; computingPhase=null; computingEvaluation=null; attempted++; publish();
     }
-    void specification(ScenarioSpec spec) throws IOException {
+    public void specification(ScenarioSpec spec) throws IOException {
         var record=new LinkedHashMap<String,Object>(); record.put("inputs",spec.inputs()); record.put("reference_seconds",spec.referenceSeconds());
         record.put("censor_s",spec.censorSeconds()); record.put("canonical_text",spec.canonicalText()); record.put("scenario_sha256",spec.fingerprint());
         String file="scenarios/replication-"+current.replication()+".json";
@@ -104,7 +104,7 @@ public final class StressOutput implements AutoCloseable {
         if(System.nanoTime()-lastProgress>=1_000_000_000L) { evaluations.flush(); publish(); }
     }
     /** Optional runtime snapshot; unpublished scalar evidence never enters scientific counters. */
-    void liveProgress(String phase,Search.Evaluation evaluation) throws IOException {
+    public void liveProgress(String phase,Search.Evaluation evaluation) throws IOException {
         if(current==null) throw new IllegalStateException("No active case for live progress");
         computingPhase=phase; computingEvaluation=evaluation;
         if(System.nanoTime()-lastProgress>=1_000_000_000L) publish();
@@ -117,7 +117,7 @@ public final class StressOutput implements AutoCloseable {
             spec==null?null:spec.fingerprint(),status,code,message,config.vmCount(),config.hostCount()));
         return row;
     }
-    void success(ScenarioSpec spec,PlacementPlan plan,double watts,int count,NativeMetrics.Result metrics,long nanos) throws IOException {
+    public void success(ScenarioSpec spec,PlacementPlan plan,double watts,int count,NativeMetrics.Result metrics,long nanos) throws IOException {
         if(current==null || count!=(current.population()==null?1:config.evaluationBudget()) || caseEvaluations!=(current.population()==null?0:count)
             || !Double.isFinite(watts) || watts!=PlacementObjective.watts(spec.inputs(),plan)
             || current.population()!=null && !Objects.equals(best,watts) || nanos<0) throw new IllegalArgumentException("Invalid stress result");
@@ -134,7 +134,7 @@ public final class StressOutput implements AutoCloseable {
         if(current.population()==null) completedEvaluations++;
         successful++; current=null; publish();
     }
-    void failed(ScenarioSpec spec,String code,String message) throws IOException {
+    public void failed(ScenarioSpec spec,String code,String message) throws IOException {
         if(current==null) throw new IllegalStateException("No active case");
         var row=caseRow(spec,"RUN_ERROR",code,message); row.add(caseEvaluations); for(int i=0;i<11;i++) row.add(null);
         cases.printRecord(row); failed++; flush(); fail(code,message);
@@ -144,7 +144,7 @@ public final class StressOutput implements AutoCloseable {
         manifest.put("state","FAILED"); manifest.put("finished_at",Instant.now().toString()); manifest.put("error",Map.of("code",code,"message",message));
         try { flush(); hashRaw(); } finally { publish(); }
     }
-    void complete() throws IOException {
+    public void complete() throws IOException {
         if(successful!=config.expectedCases() || failed!=0 || current!=null) throw new IllegalStateException("Incomplete stress matrix");
         Files.createDirectory(directory.resolve("analysis"));
         try(var summary=writer("analysis/summary.csv",SUMMARY)) {

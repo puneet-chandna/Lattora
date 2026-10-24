@@ -39,6 +39,6 @@ public final class PlacementLedger {
     public double incrementalWatts(int vm,int host) {
         if(!canPlace(vm,host)) throw new IllegalArgumentException("Infeasible placement");
         var h=inputs.hosts().get(host);
-        return (used[host][1]==0?h.idleW():0)+(h.maxW()-h.idleW())*(inputs.vms().get(vm).totalMips()/48000.0);
+        return (used[host][1]==0?h.idleW():0)+(h.maxW()-h.idleW())*(inputs.vms().get(vm).totalMips()/(double)h.totalMips());
     }
 }

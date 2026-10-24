@@ -15,12 +15,15 @@ import cloudsim_runtime
 
 import research_runner as shared
 import stress_runner as stress
+import scenario_runner as scenario
 
 ROOT = Path(__file__).resolve().parents[1]
 FROZEN_SETTINGS = {'smoke': (10, 4, 1, 'Micro'),
                    'explore': (20, 20, 5, 'Micro,Small'),
                    'research': (30, 40, 30, 'Micro,Small,Medium')}
 STRESS_FLAGS = ('preset', *stress.FIELDS, 'seed', 'time_limit')
+# Flags the scenario profile also accepts: bundled configurations and the shared deadline.
+SCENARIO_SHARED_FLAGS = ('preset', 'time_limit')
 SPACE = ' \t\f'
 
 
@@ -109,7 +112,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False,
         epilog=('No arguments opens Lattora. Python, Java and the terminal UI are bundled; experiments work offline.' if lattora_context.get_context().bundled else 'No arguments opens Lattora. Linux or macOS (Apple Silicon), Python 3.11+ and full JDK 21 are required to run. Help and dry-run require no JDK.'))
     actions = parser.add_mutually_exclusive_group()
-    actions.add_argument('--profile', choices=(*shared.FROZEN_PROFILES, 'stress'))
+    actions.add_argument('--profile', choices=(*shared.FROZEN_PROFILES, 'stress', 'scenario'))
     for action in ('check', 'build', 'test', 'setup'): actions.add_argument('--'+action, action='store_true', help=argparse.SUPPRESS if lattora_context.get_context().bundled and action in ('build','test','setup') else None)
     actions.add_argument('--validate', type=stress.output_path, metavar='DIRECTORY')
     parser.add_argument('--plain', action='store_true', help='plain progress; automatic for nonterminal output')
@@ -120,7 +123,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument('--skip-build', action='store_true', help=argparse.SUPPRESS if lattora_context.get_context().bundled else 'diagnostic profile run using the existing JAR')
     parser.add_argument('--force-build', action='store_true', help=argparse.SUPPRESS if lattora_context.get_context().bundled else 'force full build/tests instead of reusing a matching verified artifact')
     parser.add_argument('--workers', type=shared.worker_value, default='auto', help='independent case workers: auto or 1..32; bounded by CPU and shared heap')
-    parser.add_argument('--preset', choices=stress.PRESETS)
+    parser.add_argument('--preset', choices=(*stress.PRESETS, *scenario.PRESETS))
     for field in stress.FIELDS: parser.add_argument('--'+field, type=stress.positive)
     parser.add_argument('--seed', type=stress.seed_value)
     parser.add_argument('--time-limit', type=stress.parse_duration)
@@ -135,7 +138,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         incompatible = {'--config', '--skip-build', '--force-build', '--workers', '--dry-run', *('--'+field.replace('_', '-') for field in STRESS_FLAGS)}
         if options.action == 'validate': incompatible.add('--heap-mib')
         if set(flags) & incompatible: parser.error('profile settings require an applicable --profile action')
-    elif options.profile != 'stress':
+    elif options.profile == 'scenario':
+        if any('--'+field.replace('_', '-') in flags for field in STRESS_FLAGS
+               if field not in SCENARIO_SHARED_FLAGS):
+            parser.error('stress settings require --profile stress; configured scenarios declare their dimensions in the configuration file')
+        if options.preset is not None and options.preset in stress.PRESETS:
+            parser.error(f'--preset {options.preset} is a stress preset; use --profile stress')
+        if options.config is not None and options.preset is not None:
+            parser.error('--config and --preset are mutually exclusive')
+        if options.config is None and options.preset is None:
+            parser.error('the scenario profile requires exactly one of --config or --preset')
+        if options.config is not None and str(options.config) in stress.PRESETS:
+            parser.error(f'--config {options.config} is a stress preset; use --preset with --profile stress')
+    elif options.profile in shared.FROZEN_PROFILES:
         if any('--'+field.replace('_', '-') in flags for field in STRESS_FLAGS):
             parser.error('stress settings require --profile stress; frozen search settings are read-only')
         if options.config:
@@ -143,6 +158,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         try: read_frozen_config(options.config)
         except (OSError, ValueError) as error: parser.error(str(error))
     elif options.config is not None: parser.error('--config is incompatible with --profile stress')
+    elif options.preset is not None and options.preset in scenario.PRESETS:
+        parser.error(f'--preset {options.preset} is a scenario preset; use --profile scenario')
     if options.skip_build and options.force_build: parser.error('--force-build and --skip-build are incompatible')
     context = lattora_context.get_context(ROOT)
     if context.bundled and (options.action in ('build','test','setup') or options.skip_build or options.force_build):
@@ -154,6 +171,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         # The existing parser owns defaults, integer bounds, matrix and heap guards.
         options.stress_options = stress.parse_args(runner_args(options))
         for field in (*STRESS_FLAGS, 'heap_mib'): setattr(options, field, getattr(options.stress_options, field))
+    if options.profile == 'scenario':
+        # The scenario parser owns the document, resolution and validation before any output exists.
+        options.scenario_options = scenario.parse_args(runner_args(options))
     return options
 
 
@@ -164,6 +184,10 @@ def runner_args(options: argparse.Namespace) -> list[str]:
     if options.force_build: arguments.append('--force-build')
     arguments += ['--workers', str(options.workers)]
     if options.config is not None: arguments += ['--config', str(options.config)]
+    if options.profile == 'scenario' and options.preset is not None:
+        arguments += ['--preset', options.preset]
+    if options.profile == 'scenario' and getattr(options, 'time_limit', None) is not None:
+        arguments += ['--time-limit', 'none' if options.time_limit is None else str(int(options.time_limit))]
     if options.profile == 'stress':
         for field in STRESS_FLAGS:
             value = getattr(options, field)
@@ -176,7 +200,13 @@ def runner_args(options: argparse.Namespace) -> list[str]:
 
 
 def _effective(options):
-    if options.profile == 'stress': result = stress.effective(options.stress_options)
+    if options.profile == 'scenario':
+        arguments_ = options.scenario_options
+        digest = (shared.sha256(arguments_.config_path) if arguments_.config_path is not None
+                  else scenario.request_digest(arguments_.resolved))
+        result = scenario.effective(arguments_.resolved, digest)
+    elif options.profile == 'stress':
+        result = stress.effective(options.stress_options)
     elif options.profile:
         result = _properties(lattora_context.get_context(ROOT).protocol.read_text(encoding='utf-8'))
         population, iterations, replications, scenarios = FROZEN_SETTINGS[options.profile]
@@ -194,10 +224,21 @@ def preview(options: argparse.Namespace) -> dict:
     if options.action != 'profile': raise ValueError('Preview requires --profile')
     effective = _effective(options)
     execution = shared.execution_settings(options.workers, options.heap_mib)
-    memory = stress.memory_preview(options.stress_options if options.profile == 'stress' else argparse.Namespace(preset='small', vms=100, hosts=20))
+    memory = (stress.memory_preview(options.stress_options) if options.profile == 'stress'
+              else scenario.memory_preview() if options.profile == 'scenario'
+              else stress.memory_preview(argparse.Namespace(preset='small', vms=100, hosts=20)))
     java = Path(os.environ['JAVA_HOME'])/'bin/java' if os.environ.get('JAVA_HOME') else Path('java')
     retained = Path('<RETAINED>')
-    if options.profile == 'stress':
+    if options.profile == 'scenario':
+        arguments_ = options.scenario_options
+        plan = dict(scenario.planned_work(arguments_.resolved))
+        commands = [scenario.java_command(java, Path('<CONFIG>'), retained/'scenario.jar',
+                                          retained/'production'/'artifacts', execution['workers'],
+                                          heap_mib=options.heap_mib)]
+        effective['config'] = arguments_.source
+        effective['config.sha256'] = (shared.sha256(arguments_.config_path) if arguments_.config_path is not None
+                                       else scenario.request_digest(arguments_.resolved))
+    elif options.profile == 'stress':
         plan = stress.planned_work(options.stress_options)
         blocks = [(p, 'stress_calibration', f'calibration-{p.vms}') for p in stress.calibrations(options.stress_options)]
         blocks.append((options.stress_options, 'stress', 'production'))
@@ -214,12 +255,17 @@ def preview(options: argparse.Namespace) -> dict:
     warnings = [value for value in (memory.get('warning'), memory.get('policy_note')) if value]
     if memory['usable_memory_bytes'] is None: warnings.append('Usable memory is unknown; launch requires independent verified headroom.')
     if options.skip_build: warnings.append('Diagnostic --skip-build: existing packaged JAR may differ from current source protocol values.')
-    return {'action': options.action, 'profile': options.profile, 'effective_config': effective,
+    payload = {'action': options.action, 'profile': options.profile, 'effective_config': effective,
             'planned_work': plan, 'execution': execution, 'memory_evidence': memory, 'warnings': warnings,
             'commands': {'launcher': launch, 'launcher_shell': shlex.join(launch), 'java': commands,
                          'java_shell': [shlex.join(command) for command in commands],
                          'java_scope': 'Templates: unique retained output directory is assigned at execution.'},
-            'time_limit_scope': 'calibration + production + all validation; excludes build/tests' if options.profile == 'stress' else None}
+            'time_limit_scope': 'calibration + production + all validation; excludes build/tests' if options.profile == 'stress'
+                                else 'production + validation; excludes build/tests' if options.profile == 'scenario' else None}
+    if options.profile == 'scenario':
+        payload['resolved_config'] = options.scenario_options.resolved
+        payload['feasibility'] = scenario.feasibilities(options.scenario_options.resolved)
+    return payload
 
 
 def execute(options: argparse.Namespace, *, dashboard=None, on_complete=None, invocation=None) -> int:
@@ -229,9 +275,9 @@ def execute(options: argparse.Namespace, *, dashboard=None, on_complete=None, in
     if options.action == 'profile':
         if options.dry_run:
             print(json.dumps(preview(options), indent=2)); return 0
-        runner = stress if options.profile == 'stress' else shared
+        runner = scenario if options.profile == 'scenario' else stress if options.profile == 'stress' else shared
         keywords = {'dashboard': dashboard, 'on_complete': on_complete, 'invocation': original}
-        if options.profile != 'stress': keywords['profile'] = options.profile
+        if options.profile not in ('stress', 'scenario'): keywords['profile'] = options.profile
         return runner.main(runner_args(options), **keywords)
     return _maintenance(options, dashboard, on_complete, original)
 

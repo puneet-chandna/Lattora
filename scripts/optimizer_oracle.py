@@ -41,8 +41,8 @@ def feasible(mapping):
 
 
 def power(mapping):
-    return sum(idle + (full - idle) * mapping.count(h) / 16
-               for h, (_, idle, full) in enumerate(HOSTS) if h in mapping)
+    return sum(idle + (full - idle) * mapping.count(h) / pes
+               for h, (pes, idle, full) in enumerate(HOSTS) if h in mapping)
 
 
 def repair(genes):
@@ -191,7 +191,7 @@ def self_check():
     mappings = [list(m) for m in itertools.product(range(3), repeat=4)]
     valid = [m for m in mappings if feasible(m)]
     assert len(valid) == 72
-    assert min(map(power, valid)) == 193.75
+    assert min(map(power, valid)) == 250
     for mapping in mappings:
         repaired = repair([(h+.5)/3 for h in mapping])
         assert repaired in valid
@@ -212,7 +212,7 @@ def self_check():
         for offset in (0, 17, 49):
             rows, best, _, covered = reference(algo, 4, 4, offset)
             coverage.update(covered)
-            assert best['mapping'] in valid and best['fitness'] >= 193.75
+            assert best['mapping'] in valid and best['fitness'] >= 250
             assert not any(r['accepted'] for r in rows if r['phase'] == 'PREDATOR')
     required = {'warm', 'cool-near', 'cool-restart', 'gaussian-redraw',
                 ('predator-better', True), ('predator-better', False)}

@@ -47,6 +47,10 @@ public record ScenarioObjects(CloudSimPlus simulation,List<Host> hosts,List<Vm> 
         // One VM per dedicated identical-capacity host: no shared resources or network topology.
         var hosts=new ArrayList<ScenarioSpec.HostSpec>();
         for(var vm:inputs.vms()) hosts.add(new ScenarioSpec.HostSpec(vm.id(),16,3000,32768,10000,1000000,175,250));
+        return measureReferences(inputs,hosts);
+    }
+    /** Reference hosts must be one per VM, indexed by VM id; capacity never affects an isolated reference. */
+    public static List<Double> measureReferences(ScenarioSpec.Inputs inputs,List<ScenarioSpec.HostSpec> hosts) {
         var objects=create(new ScenarioSpec.Inputs(inputs.seeds(),hosts,inputs.vms(),inputs.cloudlets()));
         var policy=new VmAllocationPolicySimple((p,vm)->Optional.of(objects.hosts().get((int)vm.getId())));
         new DatacenterSimple(objects.simulation(),objects.hosts(),policy);

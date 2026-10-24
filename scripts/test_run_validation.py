@@ -84,6 +84,56 @@ class ExistingValidationTests(unittest.TestCase):
                 self.write(self.root/'runner.json', data)
                 with self.assertRaises(ValueError): self.validation.validation_targets(self.root)
 
+    def test_scenario_campaign_routes_its_single_production_block(self):
+        import scenario_runner as scenario
+        jar = self.root/'scenario.jar'; jar.write_bytes(b'fixture jar')
+        digest = shared.sha256(jar)
+        resolved = scenario.resolve_config(scenario.request_json(scenario.PRESETS['known-answer-tight']))
+        recorded = scenario.request_digest(resolved)
+        run = self.root/'production'/'artifacts'/'scenario-fixture'
+        plan = scenario.planned_work(resolved)
+        manifest = dict(experiment_kind='static_scenario', scenario_schema_version=1,
+                        protocol=scenario.PROTOCOL, profile='scenario', config_name=resolved['name'],
+                        config_sha256=recorded, state='COMPLETE', error=None, artifact_sha256=digest,
+                        master_seed=resolved['master_seed'],
+                        expected_cases=plan['expected_cases'], attempted_cases=plan['expected_cases'],
+                        successful_cases=plan['expected_cases'], failed_cases=0, unattempted_cases=0,
+                        expected_evaluations=plan['expected_evaluations'],
+                        completed_evaluations=plan['expected_evaluations'],
+                        resolved_config=resolved, effective_config=scenario.effective(resolved, recorded),
+                        feasibility=scenario.feasibilities(resolved))
+        self.write(run/'run.json', manifest)
+        metadata = dict(profile='scenario', status='complete', exit_code=0, validation='PASS',
+                        artifact_sha256=digest, resolved_config=resolved, config_sha256=recorded,
+                        effective_config=scenario.effective(resolved, recorded),
+                        feasibility=scenario.feasibilities(resolved), calibration=None,
+                        production=dict(phase='scenario', validation='PASS', directory=str(run.parent.parent),
+                                        run_directory=str(run)), run_directory=str(run))
+        self.write(self.root/'runner.json', metadata)
+        self.write(run/'config/resolved.json', resolved)
+        (run/'config/requested.json').write_text(json.dumps(resolved, indent=2) + '\n')
+        self.assertEqual(self.validation.validation_targets(self.root), [(run, 'scenario')])
+        for case, mutate in [
+            ('calibration', lambda data: data.__setitem__('calibration', [{}])),
+            ('profile', lambda data: data.__setitem__('profile', 'stress')),
+            ('resolution', lambda data: data['resolved_config']['vms'].__setitem__('count', 3)),
+            ('effective', lambda data: data['effective_config'].__setitem__('vm.count', '3')),
+            ('feasibility', lambda data: data['feasibility'][0].__setitem__('kind', 'UNPROVED')),
+            ('validation', lambda data: data['production'].__setitem__('validation', 'NOT_RUN'))]:
+            with self.subTest(case=case):
+                self.root = self.base/f'scenario-{case}'; self.root.mkdir()
+                jar = self.root/'scenario.jar'; jar.write_bytes(b'fixture jar')
+                data = json.loads(json.dumps(metadata)); data['artifact_sha256'] = shared.sha256(jar)
+                run2 = self.root/'production'/'artifacts'/'scenario-fixture'
+                manifest2 = json.loads(json.dumps(manifest)); manifest2['artifact_sha256'] = data['artifact_sha256']
+                self.write(run2/'run.json', manifest2)
+                self.write(run2/'config/resolved.json', resolved)
+                (run2/'config/requested.json').write_text(json.dumps(resolved, indent=2) + '\n')
+                data['production']['run_directory'] = str(run2); data['run_directory'] = str(run2)
+                mutate(data)
+                self.write(self.root/'runner.json', data)
+                with self.assertRaises(ValueError): self.validation.validation_targets(self.root)
+
     def test_rejects_ambiguous_schema_duplicate_keys_and_nonobjects(self):
         for content in ('[]', '{bad', '{"schema_version":2,"schema_version":2}',
                         '{"schema_version":2,"stress_schema_version":1}',

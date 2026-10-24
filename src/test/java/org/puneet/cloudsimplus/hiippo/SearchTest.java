@@ -122,8 +122,8 @@ class SearchTest {
             assertEquals(0,process.waitFor(),output); System.out.print(output);
             assertEquals(Search.budget(n,t),result.trace().size());
             if(algorithm==Search.Algorithm.GA && offset==22) {
-                assertEquals(41,b.creation()); // Last child in the final one-child partial generation wins.
-                assertEquals(193.75,b.watts());
+                assertEquals(31,b.creation()); // Incumbent already holding the minimum host-relative power is retained.
+                assertEquals(250.0,b.watts());
                 assertEquals(8,result.trace().getLast().iteration());
             }
             if(algorithm==Search.Algorithm.HO) {
@@ -158,7 +158,7 @@ class SearchTest {
             assertTrue(Collections.frequency(plan.hostIds(),0)<=2);
             if(Collections.frequency(ids,0)<=2) { feasible++; assertEquals(ids,plan.hostIds()); }
             double expected=0;
-            for(int h=0;h<3;h++) { int count=Collections.frequency(plan.hostIds(),h); if(count>0) expected+=(h==2?210:175)+(h==2?90:75)*count/16.0; }
+            for(int h=0;h<3;h++) { int count=Collections.frequency(plan.hostIds(),h); if(count>0) expected+=(h==2?210:175)+(h==2?90:75)*count/(h==0?2.0:4.0); }
             assertEquals(expected,PlacementObjective.watts(input,plan));
         }
         assertEquals(72,feasible);

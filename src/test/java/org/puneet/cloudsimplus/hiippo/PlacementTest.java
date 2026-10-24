@@ -79,7 +79,7 @@ class PlacementTest {
             if(zero>2) assertThrows(IllegalArgumentException.class,()->plan.validate(in));
             else {
                 feasible++; plan.validate(in);
-                double expected=(zero==0?0:175+75*zero/16.0)+(one==0?0:175+75*one/16.0);
+                double expected=(zero==0?0:175+75*zero/2.0)+(one==0?0:175+75*one/4.0);
                 assertEquals(expected,PlacementObjective.watts(in,plan));
             }
         }
@@ -87,7 +87,7 @@ class PlacementTest {
         for(boolean best:List.of(false,true)) {
             var result=(best?BaselinePlanner.bestFit(in):BaselinePlanner.firstFit(in)).orElseThrow();
             assertEquals(List.of(0,0,1),result.plan().hostIds());
-            assertEquals(1,result.evaluations()); assertEquals(364.0625,result.objectiveWatts());
+            assertEquals(1,result.evaluations()); assertEquals(443.75,result.objectiveWatts());
         }
         var preferTight=input(List.of(host(0,4,3000,40,40,40),host(1,2,3000,20,20,20)),in.vms());
         assertEquals(List.of(1,1,0),BaselinePlanner.bestFit(preferTight).orElseThrow().plan().hostIds());
@@ -114,5 +114,14 @@ class PlacementTest {
         assertEquals(2,rejected.policy().attempts());
         assertTrue(rejected.objects().vms().getFirst().isCreated());
         assertTrue(rejected.objects().cloudlets().stream().allMatch(c->c.getFinishedLengthSoFar()==0));
+    }
+    @Test void frozenHostCapacityStillReproducesTheDocumentedFixedDenominatorFormula() {
+        // 16 PEs x 3000 MIPS is the frozen host class; host-relative utilization must equal /48000 there.
+        var in=input(List.of(host(0,16,3000,32768,10000,1000000)),List.of(vm(0,1,3000,1024,1000,10000)));
+        var plan=new PlacementPlan(List.of(0));
+        assertEquals(175+75*3000/48000.0,PlacementObjective.watts(in,plan));
+        assertEquals(179.6875,PlacementObjective.watts(in,plan));
+        var ledger=new PlacementLedger(in);
+        assertEquals(179.6875,ledger.incrementalWatts(0,0));
     }
 }
