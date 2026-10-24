@@ -45,6 +45,25 @@ jobs:
           test "${#runs[@]}" -eq 1
           python3 scripts/statistics_validator.py "${runs[0]}"
           python3 -c 'import hashlib,json,pathlib; jar=next(pathlib.Path("target").glob("lattora-*.jar")); run=next(pathlib.Path("target/ci-smoke").iterdir()); assert json.loads((run/"run.json").read_text())["artifact_sha256"]==hashlib.sha256(jar.read_bytes()).hexdigest()'
+      - name: Run and independently validate the objective tradeoff
+        shell: bash
+        run: |
+          ./lattora.sh --profile scenario --preset known-answer-tradeoff --workers 1 --plain --output-dir target/ci-tradeoff
+          run=$(echo target/ci-tradeoff/scenario-*)
+          artifact=$(echo "$run"/production/artifacts/scenario-*)
+          python3 scripts/scenario_validator.py "$artifact"
+          python3 - "$run" "$artifact" <<'PY'
+          import csv,json,sys
+          from pathlib import Path
+          run, artifact = map(Path, sys.argv[1:])
+          metadata=json.loads((run/'runner.json').read_text())
+          assert metadata['status']=='complete' and metadata['validation']=='PASS'
+          rows=list(csv.DictReader((artifact/'raw/placements.csv').open()))
+          assert rows and {row['host_id'] for row in rows}=={'0'}, 'power objective must select the low-power host'
+          cases=list(csv.DictReader((artifact/'raw/cases.csv').open()))
+          assert all(row['objective_kind']=='power' and row['objective_version']=='1'
+                     and row['predicted_power_w']=='20.0' and row['observed_energy_j']=='600.0' for row in cases)
+          PY
 
   macos-validation:
     # macos-15 is Apple Silicon; Intel macOS is outside the supported scope.
