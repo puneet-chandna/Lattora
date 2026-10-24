@@ -47,6 +47,8 @@ jobs:
           python3 -c 'import hashlib,json,pathlib; jar=next(pathlib.Path("target").glob("lattora-*.jar")); run=next(pathlib.Path("target/ci-smoke").iterdir()); assert json.loads((run/"run.json").read_text())["artifact_sha256"]==hashlib.sha256(jar.read_bytes()).hexdigest()'
       - name: Run and independently validate the objective tradeoff
         shell: bash
+        env:
+          MAVEN_ARGS: ''
         run: |
           ./lattora.sh --profile scenario --preset known-answer-tradeoff --workers 1 --plain --output-dir target/ci-tradeoff
           run=$(echo target/ci-tradeoff/scenario-*)
