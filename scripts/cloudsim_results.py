@@ -113,8 +113,10 @@ def build_result_summary(metadata):
         stress=profile=='stress'
         scenario=profile=='scenario'
         if scenario:
-            _require(manifest.get('scenario_schema_version')==1 and manifest.get('experiment_kind')=='static_scenario'
-                     and manifest.get('protocol')=='static_scenario_v1'
+            _require(manifest.get('scenario_schema_version')==2 and manifest.get('experiment_kind')=='static_scenario'
+                     and manifest.get('protocol')=='static_scenario_v2'
+                     and manifest.get('objective',{}).get('kind') in ('power','utilization','weighted')
+                     and manifest.get('objective',{}).get('version')==1
                      and 'stress_schema_version' not in manifest and 'schema_version' not in manifest,
                      'Unsupported result schema')
         elif stress:
@@ -122,6 +124,9 @@ def build_result_summary(metadata):
         else:
             _require(manifest.get('schema_version')==2,'Unsupported result schema')
         raw=_csv(root,run,manifest,'raw/cases.csv' if stress or scenario else 'raw/main_results.csv')
+        if scenario:
+            _require(all(r['objective_kind']==manifest['objective']['kind'] and _integer(r['objective_version'])==1
+                         for r in raw),'Result objective disagrees with its manifest')
         if profile=='research': raw+=_csv(root,run,manifest,'raw/sensitivity_results.csv')
         expected=_integer(manifest['expected_cases'])
         _require(len(raw)==expected==_integer(manifest['successful_cases']) and _integer(manifest['failed_cases'])==0,
@@ -162,9 +167,11 @@ def build_result_summary(metadata):
                  'energy_j':_number(mean['energy_mean_j']),'sla':_number(mean['sla_mean']),
                  'runtime_ms':_number(mean['allocation_mean_ns'])/1_000_000}
             if stress or scenario:
-                _require(math.isclose(_number(mean['objective_mean_w']),statistics.fmean(_number(r['objective_w']) for r in group),rel_tol=2e-12,abs_tol=1e-10),
+                mean_field, case_field = (('objective_mean_w', 'objective_w') if stress
+                                          else ('predicted_power_mean_w', 'predicted_power_w'))
+                _require(math.isclose(_number(mean[mean_field]),statistics.fmean(_number(r[case_field]) for r in group),rel_tol=2e-12,abs_tol=1e-10),
                          'Result mean objective disagrees')
-                row['objective_w']=_number(mean['objective_mean_w'])
+                row['objective_w']=_number(mean[mean_field])
             algorithms.append(row)
         config=manifest['effective_config']
         if scenario:

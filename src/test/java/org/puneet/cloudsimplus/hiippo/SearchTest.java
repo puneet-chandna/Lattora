@@ -42,15 +42,18 @@ class SearchTest {
             assertEquals(Search.budget(n,t),streamed.evaluations());
             assertEquals(streamed.evaluations(),events.size());
             assertEquals(List.of(fullRandom.u,fullRandom.g),List.of(streamRandom.u,streamRandom.g));
-            Double best=null;
+            Double best=null,bestObjective=null;
             for(int i=0;i<events.size();i++) {
-                var detail=full.trace().get(i); var event=events.get(i);
-                if(detail.accepted() && detail.watts().isPresent())
-                    best=best==null?detail.watts().orElseThrow():Math.min(best,detail.watts().orElseThrow());
+                var detail=full.trace().get(i); var event=events.get(i); var score=detail.score().orElse(null);
+                if(detail.accepted() && score!=null) {
+                    best=best==null?score.powerW():Math.min(best,score.powerW());
+                    bestObjective=bestObjective==null?score.objective():Math.min(bestObjective,score.objective());
+                }
                 assertEquals(new Search.Evaluation(i+1,detail.iteration(),detail.phase(),detail.member(),
-                    detail.plan().isPresent(),detail.watts().orElse(null),detail.accepted(),best),event);
+                    detail.plan().isPresent(),score,detail.accepted(),best,bestObjective),event);
             }
             assertEquals(streamed.best().orElseThrow().watts(),events.getLast().bestWatts());
+            assertEquals(streamed.best().orElseThrow().score().objective(),events.getLast().bestObjectiveScore());
         }
     }
     @Test void seededStreamingAndImpossibleCandidatesKeepDetailedSemantics() throws Exception {

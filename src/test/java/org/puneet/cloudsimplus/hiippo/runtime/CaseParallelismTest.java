@@ -140,7 +140,8 @@ class CaseParallelismTest {
                     active.incrementAndGet();
                     try {
                         if(key.algorithm().equals("HO")) {
-                            sink.accept(new Search.Evaluation(1,0,"INITIAL",0,true,100.0,true,100.0)); entered.countDown();
+                            sink.accept(new Search.Evaluation(1,0,"INITIAL",0,true,
+                                new PlacementObjective.Score(100.0,0.5,0.25,0.5,0.25),true,100.0,0.25)); entered.countDown();
                             new CountDownLatch(1).await();
                         }
                         if(!entered.await(2,TimeUnit.SECONDS)) throw new IllegalStateException("First stress case never started");
@@ -176,7 +177,8 @@ class CaseParallelismTest {
                 var owner=new Thread(()->{
                     try { StaticCampaignRunner.executeParallel(config,output,(c,spec,key,sink,phase)->{
                         if(key.algorithm().equals("HO")) {
-                            sink.accept(new Search.Evaluation(1,0,"INITIAL",0,true,100.0,true,100.0));
+                            sink.accept(new Search.Evaluation(1,0,"INITIAL",0,true,
+                                new PlacementObjective.Score(100.0,0.5,0.25,0.5,0.25),true,100.0,0.25));
                             firstEvaluation.countDown();
                         }
                         release.await(); throw new IllegalStateException("end controlled progress test");

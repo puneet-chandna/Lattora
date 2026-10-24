@@ -1,4 +1,4 @@
-"""Scenario validator contracts: a synthesized complete run validates; every tamper is caught."""
+"""Scenario schema-2 validator contracts: a synthesized complete run validates; every tamper is caught."""
 import csv
 import hashlib
 import json
@@ -11,10 +11,10 @@ import scenario_validator as validator
 from statistics_validator import seed
 
 ID='scenario_schema_version,run_id,phase,scenario,replication,algorithm,population,iterations'
-CASE=ID+',scenario_seed,workload_seed,optimizer_seed,scenario_sha256,status,error_code,error_message,vm_count,host_count,evaluations,objective_w,energy_j,energy_kwh,sla_violations,sla_rate,completed_cloudlets,failed_cloudlets,censored_cloudlets,horizon_s,release_s,allocation_wall_ns'
+CASE=ID+',scenario_seed,workload_seed,optimizer_seed,scenario_sha256,status,error_code,error_message,vm_count,host_count,evaluations,objective_kind,objective_version,objective_score,predicted_power_w,predicted_reserved_peak_utilization,normalized_power,normalized_utilization,observed_utilization,observed_energy_j,observed_energy_kwh,observed_sla_violations,observed_sla_rate,observed_completed_cloudlets,observed_failed_cloudlets,observed_censored_cloudlets,observed_horizon_s,release_s,simulations,search_simulations,allocation_wall_ns'
 PLACE=ID+',vm_id,host_id'
-TRACE=ID+',evaluation,iteration,stage,candidate_index,feasible,fitness_w,accepted,best_fitness_w'
-SUMMARY='scenario_schema_version,run_id,phase,scenario,algorithm,n,objective_mean_w,energy_mean_j,sla_mean,allocation_mean_ns'
+TRACE=ID+',evaluation,iteration,stage,candidate_index,feasible,objective_score,predicted_power_w,predicted_reserved_peak_utilization,normalized_power,normalized_utilization,accepted,best_objective_score,best_power_w'
+SUMMARY='scenario_schema_version,run_id,phase,scenario,algorithm,n,objective_kind,objective_version,objective_mean,predicted_power_mean_w,predicted_reserved_peak_utilization_mean,normalized_power_mean,normalized_utilization_mean,observed_utilization_mean,observed_energy_mean_j,observed_sla_mean,allocation_mean_ns'
 
 
 class ScenarioValidatorTest(unittest.TestCase):
@@ -52,35 +52,39 @@ class ScenarioValidatorTest(unittest.TestCase):
 
         spec=runner.generated_spec(resolved,0)
         (self.directory/'scenarios/replication-0.json').write_text(json.dumps(spec)+'\n')
-        hosts=spec['inputs']['hosts']; vms=spec['inputs']['vms']; seconds=spec['reference_seconds']
+        hosts=spec['inputs']['hosts']; vms=spec['inputs']['vms']
         placements=[0,1]
-        watts=hosts[0]['idleW']+(hosts[0]['maxW']-hosts[0]['idleW'])*(vms[0]['pes']*vms[0]['mipsPerPe'])/(hosts[0]['pes']*hosts[0]['mipsPerPe'])
-        watts+=hosts[1]['idleW']+(hosts[1]['maxW']-hosts[1]['idleW'])*(vms[1]['pes']*vms[1]['mipsPerPe'])/(hosts[1]['pes']*hosts[1]['mipsPerPe'])
-        horizon=max(seconds)
-        energy=0.0
-        for host,vm,duration in zip(hosts,vms,seconds):
-            energy+=host['idleW']*horizon+(host['maxW']-host['idleW'])/(host['pes']*host['mipsPerPe'])*(vm['pes']*vm['mipsPerPe'])*duration
+        metrics=validator.placement_metrics(spec,placements,resolved['objective'])
 
         seeds=spec['inputs']['seeds']
         optimizer=resolved['optimizer']
+        objective=resolved['objective']
         cases=[]; places=[]; traces=[]; summaries=[]
-        for index,algorithm in enumerate(resolved['algorithms']):
+        for algorithm in resolved['algorithms']:
             search=algorithm in runner.SEARCH_ALGORITHMS
-            identity=[1,'scenario-fixture','scenario',resolved['name'],0,algorithm,
+            identity=[2,'scenario-fixture','scenario',resolved['name'],0,algorithm,
                       optimizer['population'] if search else '', optimizer['iterations'] if search else '']
             cases.append(identity+[str(seeds['scenarioSeed']),str(seeds['workloadSeed']),
                         str(seed(resolved['master_seed'],'scenario',resolved['name'],0,'optimizer',algorithm)) if search else '', spec['scenario_sha256'],
                         'RUN_OK','','',len(vms),len(hosts),
                         runner.planned_work(resolved)['evaluation_budget'] if search else 1,
-                        watts,energy,energy/3600000,0,0,len(vms),0,0,horizon,.125,1000])
+                        objective['kind'],1,metrics['objective'],metrics['power'],metrics['reserved_peak_utilization'],
+                        metrics['normalized_power'],metrics['normalized_utilization'],metrics['observed_utilization'],
+                        metrics['energy'],metrics['energy']/3600000,0,0,len(vms),0,0,metrics['horizon'],.125,1,0,1000])
             places.append(identity+[0,placements[0]])
             places.append(identity+[1,placements[1]])
             if search:
                 for evaluation,(iteration,stage,member) in enumerate(
                         validator.trace_order(algorithm,optimizer['population'],optimizer['iterations']),1):
-                    traces.append(identity+[evaluation,iteration,stage,member,'true',watts,
-                                            'true' if stage in ('INITIAL','CHILD') else 'false',watts])
-            summaries.append([1,'scenario-fixture','scenario',resolved['name'],algorithm,1,watts,energy,0,1000])
+                    traces.append(identity+[evaluation,iteration,stage,member,'true',metrics['objective'],
+                                            metrics['power'],metrics['reserved_peak_utilization'],
+                                            metrics['normalized_power'],metrics['normalized_utilization'],
+                                            'true' if stage in ('INITIAL','CHILD') else 'false',
+                                            metrics['objective'],metrics['power']])
+            summaries.append([2,'scenario-fixture','scenario',resolved['name'],algorithm,1,objective['kind'],1,
+                              metrics['objective'],metrics['power'],metrics['reserved_peak_utilization'],
+                              metrics['normalized_power'],metrics['normalized_utilization'],
+                              metrics['observed_utilization'],metrics['energy'],0,1000])
         self.write_csv('raw/cases.csv',CASE,cases)
         self.write_csv('raw/placements.csv',PLACE,places)
         self.write_csv('raw/evaluations.csv',TRACE,traces)
@@ -89,11 +93,14 @@ class ScenarioValidatorTest(unittest.TestCase):
         plan=runner.planned_work(resolved)
         counters=dict(expected_cases=plan['expected_cases'],attempted_cases=plan['expected_cases'],
                      successful_cases=plan['expected_cases'],failed_cases=0,unattempted_cases=0,
-                     expected_evaluations=plan['expected_evaluations'],completed_evaluations=plan['expected_evaluations'])
-        manifest=dict(experiment_kind='static_scenario',scenario_schema_version=1,protocol=runner.PROTOCOL,
+                     expected_evaluations=plan['expected_evaluations'],completed_evaluations=plan['expected_evaluations'],
+                     expected_simulations=plan['expected_cases'],completed_simulations=plan['expected_cases'],
+                     search_simulations=0)
+        manifest=dict(experiment_kind='static_scenario',scenario_schema_version=2,protocol=runner.PROTOCOL,
                       profile='scenario',run_id='scenario-fixture',config_name=resolved['name'],config_sha256=digest,
-                      state='COMPLETE',started_at='2026-10-01T00:00:00Z',finished_at='2026-10-01T00:00:01Z',
-                      master_seed=resolved['master_seed'],resolved_config=resolved,effective_config=effective,
+                      objective=objective,state='COMPLETE',started_at='2026-10-01T00:00:00Z',
+                      finished_at='2026-10-01T00:00:01Z',master_seed=resolved['master_seed'],
+                      resolved_config=resolved,effective_config=effective,
                       feasibility=runner.feasibilities(resolved),error=None,source_version='development (unpackaged)',
                       artifact_sha256=None,git_revision='unknown',git_dirty=True,java_version='21',cloudsim_version='8.5.7',
                       os='Linux',arch='amd64',max_heap_bytes=33554432,execution_workers=1,
@@ -122,7 +129,7 @@ class ScenarioValidatorTest(unittest.TestCase):
 
     def test_tampered_file_hash_is_rejected(self):
         path=self.directory/'raw/cases.csv'
-        path.write_text(path.read_text().replace('400.0','401.0'))
+        path.write_text(path.read_text().replace(',400.0,',',401.0,'))
         with self.assertRaises(ValueError): validator.validate(self.directory)
 
     def test_tampered_resolved_and_requested_documents_are_rejected(self):
@@ -132,12 +139,15 @@ class ScenarioValidatorTest(unittest.TestCase):
         self.mutate_json('config/requested.json',lambda data:data.__setitem__('replications',2))
         with self.assertRaises(ValueError): validator.validate(self.directory)
 
-    def test_altered_feasibility_and_effective_map_are_rejected(self):
+    def test_altered_feasibility_effective_map_and_objective_are_rejected(self):
         self.mutate_json('run.json',lambda data:data['feasibility'][0].__setitem__('kind','UNPROVED'))
         with self.assertRaises(ValueError): validator.validate(self.directory)
         self.build()
         text=(self.directory/'effective.properties').read_text()
         (self.directory/'effective.properties').write_text(text.replace('vm.count=2','vm.count=3'))
+        with self.assertRaises(ValueError): validator.validate(self.directory)
+        self.build()
+        self.mutate_json('run.json',lambda data:data['objective'].__setitem__('kind','utilization'))
         with self.assertRaises(ValueError): validator.validate(self.directory)
 
     def test_mixed_schema_keys_are_rejected(self):
@@ -147,21 +157,34 @@ class ScenarioValidatorTest(unittest.TestCase):
         self.mutate_json('run.json',lambda data:data.__setitem__('schema_version',2))
         with self.assertRaises(ValueError): validator.validate(self.directory)
 
-    def test_rehashed_objective_energy_and_placement_tampers_are_rejected(self):
-        for column,value in [('objective_w','401.0'),('energy_j','24001.0'),('energy_kwh','0.01'),
-                             ('horizon_s','61.0'),('release_s','0'),('sla_rate','1'),('completed_cloudlets','1'),
-                             ('evaluations','131'),('scenario_seed','1'),('scenario_sha256','0'*64)]:
+    def test_rehashed_predicted_and_observed_tampers_are_rejected(self):
+        for column,value in [('objective_score','400.0'),('predicted_power_w','401.0'),
+                             ('predicted_reserved_peak_utilization','0.5'),('normalized_power','0.5'),
+                             ('normalized_utilization','0.5'),('observed_utilization','0.5'),
+                             ('observed_energy_j','24001.0'),('observed_energy_kwh','0.01'),
+                             ('observed_horizon_s','61.0'),('release_s','0'),('observed_sla_rate','1'),
+                             ('observed_completed_cloudlets','1'),('evaluations','131'),('scenario_seed','1'),
+                             ('scenario_sha256','0'*64),('simulations','0')]:
             self.mutate_csv('raw/cases.csv',lambda rows:rows[1].__setitem__(rows[0].index(column),value))
             with self.subTest(column=column),self.assertRaises(ValueError): validator.validate(self.directory)
         self.build()
-        self.mutate_csv('raw/cases.csv',lambda rows:rows[1].__setitem__(rows[0].index('objective_w'),'400.5'))
+        self.mutate_csv('raw/cases.csv',lambda rows:rows[1].__setitem__(rows[0].index('objective_score'),'0.5'))
+        with self.assertRaises(ValueError): validator.validate(self.directory)
+        self.build()
+        self.mutate_csv('raw/cases.csv',lambda rows:rows[1].__setitem__(rows[0].index('objective_kind'),'utilization'))
         with self.assertRaises(ValueError): validator.validate(self.directory)
 
-    def test_rehashed_trace_order_and_summary_mean_are_rejected(self):
+    def test_rehashed_trace_components_order_and_summary_mean_are_rejected(self):
+        self.mutate_csv('raw/evaluations.csv',lambda rows:rows[1].__setitem__(rows[0].index('normalized_power'),'0.5'))
+        with self.assertRaises(ValueError): validator.validate(self.directory)
+        self.build()
+        self.mutate_csv('raw/evaluations.csv',lambda rows:rows[1].__setitem__(rows[0].index('best_power_w'),'401.0'))
+        with self.assertRaises(ValueError): validator.validate(self.directory)
+        self.build()
         self.mutate_csv('raw/evaluations.csv',lambda rows:rows.__setitem__(slice(1,3),rows[1:3][::-1]))
         with self.assertRaises(ValueError): validator.validate(self.directory)
         self.build()
-        self.mutate_csv('analysis/summary.csv',lambda rows:rows[1].__setitem__(rows[0].index('objective_mean_w'),'401.0'))
+        self.mutate_csv('analysis/summary.csv',lambda rows:rows[1].__setitem__(rows[0].index('objective_mean'),'0.5'))
         with self.assertRaises(ValueError): validator.validate(self.directory)
 
     def test_unlisted_evidence_files_are_rejected(self):

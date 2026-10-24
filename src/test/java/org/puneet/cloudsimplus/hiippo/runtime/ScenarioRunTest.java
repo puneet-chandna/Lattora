@@ -14,9 +14,10 @@ import static org.junit.jupiter.api.Assertions.*;
 class ScenarioRunTest {
     @TempDir Path temp;
     private static final String ID="scenario_schema_version,run_id,phase,scenario,replication,algorithm,population,iterations";
-    private static final String CASE=ID+",scenario_seed,workload_seed,optimizer_seed,scenario_sha256,status,error_code,error_message,vm_count,host_count,evaluations,objective_w,energy_j,energy_kwh,sla_violations,sla_rate,completed_cloudlets,failed_cloudlets,censored_cloudlets,horizon_s,release_s,allocation_wall_ns";
+    private static final String CASE=ID+",scenario_seed,workload_seed,optimizer_seed,scenario_sha256,status,error_code,error_message,vm_count,host_count,evaluations,objective_kind,objective_version,objective_score,predicted_power_w,predicted_reserved_peak_utilization,normalized_power,normalized_utilization,observed_utilization,observed_energy_j,observed_energy_kwh,observed_sla_violations,observed_sla_rate,observed_completed_cloudlets,observed_failed_cloudlets,observed_censored_cloudlets,observed_horizon_s,release_s,simulations,search_simulations,allocation_wall_ns";
     private static final String PLACE=ID+",vm_id,host_id";
-    private static final String SUMMARY="scenario_schema_version,run_id,phase,scenario,algorithm,n,objective_mean_w,energy_mean_j,sla_mean,allocation_mean_ns";
+    private static final String TRACE=ID+",evaluation,iteration,stage,candidate_index,feasible,objective_score,predicted_power_w,predicted_reserved_peak_utilization,normalized_power,normalized_utilization,accepted,best_objective_score,best_power_w";
+    private static final String SUMMARY="scenario_schema_version,run_id,phase,scenario,algorithm,n,objective_kind,objective_version,objective_mean,predicted_power_mean_w,predicted_reserved_peak_utilization_mean,normalized_power_mean,normalized_utilization_mean,observed_utilization_mean,observed_energy_mean_j,observed_sla_mean,allocation_mean_ns";
     static final String FEASIBLE="""
         { "config_version": 1, "name": "known-answer-feasible", "master_seed": 123456, "replications": 1,
           "algorithms": ["HO","GA","FirstFit","BestFit"],
@@ -96,15 +97,22 @@ class ScenarioRunTest {
             var manifest=json(dir.resolve("run.json"));
             assertEquals("COMPLETE",manifest.get("state").getAsString());
             assertEquals("static_scenario",manifest.get("experiment_kind").getAsString());
-            assertEquals(1,manifest.get("scenario_schema_version").getAsInt());
-            assertEquals("static_scenario_v1",manifest.get("protocol").getAsString());
+            assertEquals(2,manifest.get("scenario_schema_version").getAsInt());
+            assertEquals("static_scenario_v2",manifest.get("protocol").getAsString());
             assertEquals("scenario",manifest.get("profile").getAsString());
             assertEquals(name,manifest.get("config_name").getAsString());
             assertEquals(ScenarioConfig.load(config).configSha256(),manifest.get("config_sha256").getAsString());
             assertEquals("CONSTRUCTIBLE",manifest.getAsJsonArray("feasibility").get(0).getAsJsonObject().get("kind").getAsString());
             assertEquals(4,manifest.get("expected_cases").getAsInt()); assertEquals(4,manifest.get("successful_cases").getAsInt());
             assertEquals(262,manifest.get("expected_evaluations").getAsInt()); assertEquals(262,manifest.get("completed_evaluations").getAsInt());
+            assertEquals(4,manifest.get("expected_simulations").getAsInt()); assertEquals(4,manifest.get("completed_simulations").getAsInt());
+            assertEquals(0,manifest.get("search_simulations").getAsInt());
             assertEquals(0,manifest.get("unattempted_cases").getAsInt()); assertEquals(0,manifest.get("failed_cases").getAsInt());
+            var declaredObjective=manifest.getAsJsonObject("objective");
+            assertEquals("power",declaredObjective.get("kind").getAsString()); assertEquals(1,declaredObjective.get("version").getAsInt());
+            assertEquals(1.0,declaredObjective.getAsJsonObject("weights").get("power").getAsDouble());
+            assertEquals(0.0,declaredObjective.getAsJsonObject("weights").get("utilization").getAsDouble());
+            assertEquals(400,declaredObjective.getAsJsonObject("normalization").get("power_max_w_sum").getAsInt());
             assertTrue(manifest.get("model_limits").getAsString().contains("no migrations"));
             assertTrue(manifest.get("evidence_limit").getAsString().contains("discarded candidates"));
             assertEquals(json(dir.resolve("config/resolved.json")),manifest.getAsJsonObject("resolved_config"));
@@ -114,14 +122,21 @@ class ScenarioRunTest {
             for(var row:cases) {
                 assertEquals("RUN_OK",row.get("status"));
                 assertEquals("",row.get("error_code")); assertEquals("",row.get("error_message"));
-                assertEquals(objective,Double.parseDouble(row.get("objective_w")));
-                assertEquals(energy,Double.parseDouble(row.get("energy_j")));
-                assertEquals(energy/3_600_000,Double.parseDouble(row.get("energy_kwh")));
-                assertEquals(horizon,Double.parseDouble(row.get("horizon_s")));
+                assertEquals("power",row.get("objective_kind")); assertEquals("1",row.get("objective_version"));
+                assertEquals(objective,Double.parseDouble(row.get("predicted_power_w")));
+                assertEquals(objective/400,Double.parseDouble(row.get("objective_score")));
+                assertEquals(objective/400,Double.parseDouble(row.get("normalized_power")));
+                assertEquals(tight?1.0:0.25,Double.parseDouble(row.get("predicted_reserved_peak_utilization")));
+                assertEquals(tight?1.0:0.25,Double.parseDouble(row.get("normalized_utilization")));
+                assertEquals(tight?1.0:0.125,Double.parseDouble(row.get("observed_utilization")));
+                assertEquals(energy,Double.parseDouble(row.get("observed_energy_j")));
+                assertEquals(energy/3_600_000,Double.parseDouble(row.get("observed_energy_kwh")));
+                assertEquals(horizon,Double.parseDouble(row.get("observed_horizon_s")));
                 assertEquals(0.125,Double.parseDouble(row.get("release_s")));
-                assertEquals(0.0,Double.parseDouble(row.get("sla_rate")));
+                assertEquals(0.0,Double.parseDouble(row.get("observed_sla_rate")));
+                assertEquals("1",row.get("simulations")); assertEquals("0",row.get("search_simulations"));
                 assertEquals("2",row.get("vm_count")); assertEquals("2",row.get("host_count"));
-                assertEquals("2",row.get("completed_cloudlets")); assertEquals("0",row.get("censored_cloudlets"));
+                assertEquals("2",row.get("observed_completed_cloudlets")); assertEquals("0",row.get("observed_censored_cloudlets"));
             }
             assertEquals(1,cases.stream().map(r->List.of(r.get("scenario_seed"),r.get("workload_seed"),r.get("scenario_sha256"))).distinct().count());
             assertEquals(2,cases.stream().map(r->r.get("optimizer_seed")).filter(value->!value.isEmpty()).distinct().count());
@@ -141,6 +156,66 @@ class ScenarioRunTest {
             assertEquals(ScenarioGenerator.generateConfigured(123456,"scenario",name,0,ScenarioConfig.load(config).generationSpec()).fingerprint(),
                 json(dir.resolve("scenarios/replication-0.json")).get("scenario_sha256").getAsString());
             assertFalse(Files.exists(dir.resolve("case-spools")));
+        }
+    }
+    @Test void objectiveSelectionChangesPlacementAndWeightedScoresReconstruct() throws Exception {
+        record Variant(String name,Map<String,Object> objective,double powerWeight,List<Integer> hosts,double power,double peak,double energy) {}
+        var variants=List.of(
+            new Variant("tradeoff-power",Map.of("kind","power"),1.0,List.of(0,0),20.0,1.0,600.0),
+            new Variant("tradeoff-utilization",Map.of("kind","utilization"),0.0,List.of(1,1),
+                100.0+100.0*(2.0/6.0),1.0/3.0,4000.0),
+            new Variant("tradeoff-weighted-40-60",Map.of("kind","weighted","weights",Map.of("power",0.4,"utilization",0.6)),
+                0.4,List.of(1,1),100.0+100.0*(2.0/6.0),1.0/3.0,4000.0),
+            new Variant("tradeoff-weighted-70-30",Map.of("kind","weighted","weights",Map.of("power",0.7,"utilization",0.3)),
+                0.7,List.of(0,0),20.0,1.0,600.0));
+        for(var variant:variants) {
+            var document=ScenarioConfigTest.tight();
+            document.put("name",variant.name()); document.put("algorithms",List.of("HO","GA"));
+            var hosts=new ArrayList<Map<String,Object>>();
+            for(int[] values:List.of(new int[]{2,3000,10,20},new int[]{6,3000,100,200})) {
+                var host=new LinkedHashMap<String,Object>();
+                host.put("count",1); host.put("pes",values[0]); host.put("mips_per_pe",values[1]); host.put("ram_mib",8192);
+                host.put("bw_mbps",2000); host.put("storage_mib",20000); host.put("idle_w",values[2]); host.put("max_w",values[3]);
+                hosts.add(host);
+            }
+            document.put("hosts",hosts);
+            var vms=new LinkedHashMap<String,Object>();
+            vms.put("count",2); vms.put("pes",new ArrayList<>(List.of(1))); vms.put("mips_per_pe",new ArrayList<>(List.of(3000)));
+            vms.put("ram_mib",new ArrayList<>(List.of(2048))); vms.put("bw_mbps",new ArrayList<>(List.of(1000)));
+            vms.put("storage_mib",new ArrayList<>(List.of(10000)));
+            document.put("vms",vms);
+            document.put("workload",new LinkedHashMap<String,Object>(Map.of("length_seconds",new LinkedHashMap<String,Object>(Map.of("min",30,"max",30)),
+                "utilization",1.0,"release_seconds",0.0)));
+            document.put("objective",new LinkedHashMap<String,Object>(variant.objective()));
+            var config=config(variant.name(),new GsonBuilder().setPrettyPrinting().create().toJson(document)+"\n");
+            var dir=run(config,temp.resolve("out-"+variant.name()));
+            var cases=rows(dir,"raw/cases.csv",CASE);
+            assertEquals(2,cases.size());
+            var plans=new TreeMap<String,List<Integer>>();
+            for(var placement:rows(dir,"raw/placements.csv",PLACE)) {
+                assertEquals("0",placement.get("replication")); assertEquals("2",placement.get("scenario_schema_version"));
+                plans.computeIfAbsent(placement.get("algorithm"),key->new ArrayList<>()).add(Integer.parseInt(placement.get("host_id")));
+            }
+            assertEquals(new TreeSet<>(Set.of("HO","GA")),plans.keySet());
+            for(var entry:plans.entrySet()) assertEquals(variant.hosts(),entry.getValue(),entry.getKey());
+            for(var row:cases) {
+                assertEquals("RUN_OK",row.get("status")); assertEquals(variant.name(),row.get("scenario"));
+                assertEquals("2",row.get("scenario_schema_version")); assertEquals("1",row.get("objective_version"));
+                assertEquals(variant.power(),Double.parseDouble(row.get("predicted_power_w")),1e-9);
+                assertEquals(variant.peak(),Double.parseDouble(row.get("predicted_reserved_peak_utilization")),1e-12);
+                double normalized=variant.power()/220.0;
+                assertEquals(normalized,Double.parseDouble(row.get("normalized_power")),1e-12);
+                assertEquals(variant.peak(),Double.parseDouble(row.get("normalized_utilization")),1e-12);
+                double expected=variant.powerWeight()*normalized+(1.0-variant.powerWeight())*variant.peak();
+                assertEquals(expected,Double.parseDouble(row.get("objective_score")),1e-12);
+                assertEquals(variant.energy(),Double.parseDouble(row.get("observed_energy_j")),1e-6);
+                assertEquals(0.25,Double.parseDouble(row.get("observed_utilization")),1e-12);
+                assertEquals("1",row.get("simulations")); assertEquals("0",row.get("search_simulations"));
+            }
+            var manifest=json(dir.resolve("run.json"));
+            assertEquals("COMPLETE",manifest.get("state").getAsString());
+            assertEquals(2,manifest.get("completed_simulations").getAsInt()); assertEquals(0,manifest.get("search_simulations").getAsInt());
+            assertEquals(variant.objective().get("kind"),manifest.getAsJsonObject("objective").get("kind").getAsString());
         }
     }
     @Test void rerunsProduceIdenticalScientificRowsAndScenarioHashes() throws Exception {
@@ -192,7 +267,7 @@ class ScenarioRunTest {
         assertFalse(plainManifest.getAsJsonObject("resolved_config").has("optimizer"));
         assertFalse(json(plain.resolve("config/resolved.json")).has("optimizer"));
         assertEquals(2,rows(plain,"raw/cases.csv",CASE).stream().filter(r->r.get("optimizer_seed").isEmpty()).count());
-        assertEquals(0,rows(plain,"raw/evaluations.csv",ID+",evaluation,iteration,stage,candidate_index,feasible,fitness_w,accepted,best_fitness_w").size());
+        assertEquals(0,rows(plain,"raw/evaluations.csv",TRACE).size());
     }
     @Test void provedInfeasibleConfigurationsFailBeforeAnySimulation() throws Exception {
         var config=config("infeasible",INFEASIBLE);
@@ -229,8 +304,8 @@ class ScenarioRunTest {
                 scientific(parallel,"raw/cases.csv",CASE,"run_id","allocation_wall_ns"));
             assertEquals(scientific(serial,"raw/placements.csv",PLACE,"run_id"),
                 scientific(parallel,"raw/placements.csv",PLACE,"run_id"));
-            assertEquals(scientific(serial,"raw/evaluations.csv",ID+",evaluation,iteration,stage,candidate_index,feasible,fitness_w,accepted,best_fitness_w","run_id"),
-                scientific(parallel,"raw/evaluations.csv",ID+",evaluation,iteration,stage,candidate_index,feasible,fitness_w,accepted,best_fitness_w","run_id"));
+            assertEquals(scientific(serial,"raw/evaluations.csv",TRACE,"run_id"),
+                scientific(parallel,"raw/evaluations.csv",TRACE,"run_id"));
             for(int replication=0;replication<2;replication++) assertEquals(
                 Files.readString(serial.resolve("scenarios/replication-"+replication+".json")),
                 Files.readString(parallel.resolve("scenarios/replication-"+replication+".json")));

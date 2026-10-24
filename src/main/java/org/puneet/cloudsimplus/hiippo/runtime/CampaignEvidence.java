@@ -1,5 +1,6 @@
 package org.puneet.cloudsimplus.hiippo.runtime;
 
+import org.puneet.cloudsimplus.hiippo.placement.PlacementObjective;
 import org.puneet.cloudsimplus.hiippo.placement.PlacementPlan;
 import org.puneet.cloudsimplus.hiippo.placement.Search;
 import org.puneet.cloudsimplus.hiippo.scenario.ScenarioSpec;
@@ -14,7 +15,7 @@ public interface CampaignEvidence extends AutoCloseable {
     void specification(ScenarioSpec spec) throws IOException;
     void evaluation(Search.Evaluation value) throws IOException;
     void liveProgress(String phase,Search.Evaluation evaluation) throws IOException;
-    void success(ScenarioSpec spec,PlacementPlan plan,double watts,int evaluations,NativeMetrics.Result metrics,long nanos) throws IOException;
+    void success(ScenarioSpec spec,PlacementPlan plan,PlacementObjective.Score score,int evaluations,NativeMetrics.Result metrics,long nanos) throws IOException;
     void failed(ScenarioSpec spec,String code,String message) throws IOException;
     void fail(String code,String message) throws IOException;
     void complete() throws IOException;

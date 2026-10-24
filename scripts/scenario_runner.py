@@ -28,8 +28,14 @@ from statistics_validator import JavaRandom, seed
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_VERSION = 1
 PHASE = 'scenario'
-SCENARIO_SCHEMA_VERSION = 1
-PROTOCOL = 'static_scenario_v1'
+SCENARIO_SCHEMA_VERSION = 2
+PROTOCOL = 'static_scenario_v2'
+OBJECTIVE_VERSION = 1
+POWER_NORMALIZATION = 'sum_host_max_w'
+UTILIZATION_NORMALIZATION = 'reserved_peak_fraction'
+SLA_MODEL = 'unsupported_constant_full'
+SLA_UNSUPPORTED = ('objective.kind sla is unsupported: constant full utilization predicts zero SLA violations for '
+                   'every feasible placement; use power, utilization or weighted until a contention model is supported')
 ALGORITHMS = ('HO', 'GA', 'FirstFit', 'BestFit')
 SEARCH_ALGORITHMS = ('HO', 'GA')
 CONFIG_NAME = '[a-z][a-z0-9._-]{0,63}'
@@ -52,9 +58,12 @@ ALLOCATION_TIMING = ('End-to-end search including synchronous buffered scalar tr
 NAME_PATTERN = re.compile(CONFIG_NAME)
 NUMBER_PATTERN = re.compile(r'-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?')
 # Engine field order; every JSON path and rejection message follows it.
-TOP_KEYS = ('config_version', 'name', 'master_seed', 'replications', 'algorithms', 'optimizer', 'hosts', 'vms', 'workload')
+TOP_KEYS = ('config_version', 'name', 'master_seed', 'replications', 'algorithms', 'objective', 'optimizer', 'hosts',
+            'vms', 'workload')
 HOST_KEYS = ('count', 'pes', 'mips_per_pe', 'ram_mib', 'bw_mbps', 'storage_mib', 'idle_w', 'max_w')
 OPTIMIZER_KEYS = ('population', 'iterations')
+OBJECTIVE_KEYS = ('kind', 'weights')
+WEIGHT_KEYS = ('power', 'utilization')
 WORKLOAD_KEYS = ('length_seconds', 'utilization', 'release_seconds')
 DEMANDS = ('pes', 'mips_per_pe', 'ram_mib', 'bw_mbps', 'storage_mib')
 DIMENSIONS = ('pes', 'mips', 'ram_mib', 'bw_mbps', 'storage_mib')
@@ -78,6 +87,18 @@ TIGHT = {'config_version': 1, 'name': 'known-answer-tight', 'master_seed': 12345
          'vms': {'count': 2, 'pes': [2], 'mips_per_pe': [3000], 'ram_mib': [8192], 'bw_mbps': [2000],
                  'storage_mib': [20000]},
          'workload': {'length_seconds': {'min': 60, 'max': 60}, 'utilization': 1.0, 'release_seconds': 0.0}}
+TRADEOFF = {'config_version': 1, 'name': 'known-answer-tradeoff', 'master_seed': 123456, 'replications': 1,
+            'algorithms': ['HO', 'GA'], 'optimizer': {'population': 10, 'iterations': 4},
+            'objective': {'kind': 'power'},
+            # Low-power host first: two VMs fit together at 100% reserved utilization and 20 W steady.
+            # The six-PE host is more expensive but halves the reserved peak; selection flips with the objective.
+            'hosts': [{'count': 1, 'pes': 2, 'mips_per_pe': 3000, 'ram_mib': 8192, 'bw_mbps': 2000,
+                       'storage_mib': 20000, 'idle_w': 10, 'max_w': 20},
+                      {'count': 1, 'pes': 6, 'mips_per_pe': 3000, 'ram_mib': 8192, 'bw_mbps': 2000,
+                       'storage_mib': 20000, 'idle_w': 100, 'max_w': 200}],
+            'vms': {'count': 2, 'pes': [1], 'mips_per_pe': [3000], 'ram_mib': [2048], 'bw_mbps': [1000],
+                    'storage_mib': [10000]},
+            'workload': {'length_seconds': {'min': 30, 'max': 30}, 'utilization': 1.0, 'release_seconds': 0.0}}
 INFEASIBLE = {'config_version': 1, 'name': 'known-answer-infeasible', 'master_seed': 123456, 'replications': 1,
               'algorithms': ['HO', 'GA', 'FirstFit', 'BestFit'], 'optimizer': {'population': 10, 'iterations': 4},
               'hosts': [{'count': 1, 'pes': 4, 'mips_per_pe': 3000, 'ram_mib': 4096, 'bw_mbps': 1000,
@@ -105,8 +126,9 @@ PRESSURE = {'config_version': 1, 'name': 'resource-pressure', 'master_seed': 123
             'vms': {'count': 36, 'pes': [2], 'mips_per_pe': [2000], 'ram_mib': [8192], 'bw_mbps': [1000],
                     'storage_mib': [20000]},
             'workload': {'length_seconds': {'min': 60, 'max': 120}, 'utilization': 1.0, 'release_seconds': 0.0}}
-PRESETS = {'known-answer-feasible': FEASIBLE, 'known-answer-tight': TIGHT, 'known-answer-infeasible': INFEASIBLE,
-           'heterogeneous-hosts': HETEROGENEOUS, 'resource-pressure': PRESSURE}
+PRESETS = {'known-answer-feasible': FEASIBLE, 'known-answer-tight': TIGHT, 'known-answer-tradeoff': TRADEOFF,
+           'known-answer-infeasible': INFEASIBLE, 'heterogeneous-hosts': HETEROGENEOUS,
+           'resource-pressure': PRESSURE}
 
 
 class ConfigError(ValueError):
@@ -350,6 +372,51 @@ def _algorithms(value):
     return [algorithm for algorithm in ALGORITHMS if algorithm in selected]
 
 
+def _weight(value):
+    """Exact decimal value of a declared weight, or None when it is not a finite number from 0 to 1."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    try:
+        decimal = Decimal(str(value))
+    except ArithmeticError:
+        return None
+    return decimal if Decimal(0) <= decimal <= Decimal(1) else None
+
+
+def _objective(value):
+    """Resolved objective choice with its weights; SLA is recognized but rejected by the supported model."""
+    if value is None:
+        return {'kind': 'power', 'power': 1.0, 'utilization': 0.0}
+    if not isinstance(value, dict):
+        raise ConfigError('objective must be an object with a kind')
+    declared = _unknown(value, OBJECTIVE_KEYS, 'objective')
+    kind = declared.get('kind')
+    if not isinstance(kind, str) or kind not in ('power', 'utilization', 'sla', 'weighted'):
+        raise ConfigError('objective.kind must be one of power,utilization,sla,weighted')
+    if kind == 'sla':
+        raise ConfigError(SLA_UNSUPPORTED)
+    raw_weights = declared.get('weights')
+    if kind != 'weighted':
+        if raw_weights is not None:
+            raise ConfigError('objective.weights is only valid when objective.kind is weighted')
+        return {'kind': kind, 'power': 1.0 if kind == 'power' else 0.0,
+                'utilization': 1.0 if kind == 'utilization' else 0.0}
+    if not isinstance(raw_weights, dict):
+        raise ConfigError('objective.weights is required when objective.kind is weighted')
+    for key in raw_weights:
+        if key == 'sla':
+            raise ConfigError('objective.weights.sla is unsupported: constant full utilization cannot predict SLA differences')
+        if key not in WEIGHT_KEYS:
+            raise ConfigError('unknown field: objective.weights.' + key)
+    power, utilization = _weight(raw_weights.get('power')), _weight(raw_weights.get('utilization'))
+    if power is None or utilization is None or power + utilization != Decimal(1):
+        raise ConfigError('objective.weights must contain power and utilization numbers from 0.0 to 1.0 '
+                          'whose sum is exactly 1.0')
+    return {'kind': 'weighted', 'power': float(power), 'utilization': float(utilization)}
+
+
 def _optimizer(value, algorithms):
     if not _search(algorithms):
         if value is not None:
@@ -475,11 +542,15 @@ def _resolve(document):
         raise ConfigError(f"replications must be an integer from 1 to {LIMITS['MAX_REPLICATIONS']}")
     replications = int(document['replications'])
     algorithms = _algorithms(document.get('algorithms'))
+    objective = _objective(document.get('objective'))
     optimizer = _optimizer(document.get('optimizer'), algorithms)
     host_classes = _host_classes(document.get('hosts'))
     host_count = sum(host_class['count'] for host_class in host_classes)
     if not 1 <= host_count <= LIMITS['MAX_HOSTS']:
         raise ConfigError(f"total host count must be from 1 to {LIMITS['MAX_HOSTS']}")
+    power_max_w_sum = sum(host_class['count'] * host_class['max_w'] for host_class in host_classes)
+    if power_max_w_sum < 1:
+        raise ConfigError('hosts must declare a positive total max_w power ceiling')
     vms = _demands(document.get('vms'), host_classes)
     workload = _workload(document.get('workload'))
     if vms['count'] * host_count > INT_MAX:
@@ -496,7 +567,12 @@ def _resolve(document):
     if replications * (search * budget + len(algorithms) - search) > INT_MAX:
         raise ConfigError(f'total expected evaluations must not exceed {INT_MAX}')
     resolved = {'config_version': CONFIG_VERSION, 'name': name, 'master_seed': master_seed,
-                'replications': replications, 'algorithms': algorithms}
+                'replications': replications, 'algorithms': algorithms,
+                'objective': {'kind': objective['kind'], 'version': OBJECTIVE_VERSION,
+                              'weights': {'power': objective['power'], 'utilization': objective['utilization']},
+                              'normalization': {'power': POWER_NORMALIZATION,
+                                                'power_max_w_sum': power_max_w_sum,
+                                                'utilization': UTILIZATION_NORMALIZATION}}}
     if optimizer is not None:
         resolved['optimizer'] = optimizer
     resolved['hosts'] = host_classes
@@ -641,12 +717,21 @@ def effective(resolved, config_sha256):
     """The flat, sorted-by-renderer effective map recorded in effective.properties."""
     plan = planned_work(resolved)
     optimizer = resolved.get('optimizer')
+    objective = resolved['objective']
     seconds = resolved['workload']['length_seconds']
     result = {'profile': PHASE, 'experiment.kind': 'static_scenario',
               'scenario.schema.version': str(SCENARIO_SCHEMA_VERSION), 'experiment.phase': PHASE,
               'config.name': resolved['name'], 'config.sha256': config_sha256,
               'master.seed': str(resolved['master_seed']), 'replication.count': str(resolved['replications']),
-              'algorithms': ','.join(resolved['algorithms']), 'vm.count': str(resolved['vms']['count']),
+              'algorithms': ','.join(resolved['algorithms']), 'objective.kind': objective['kind'],
+              'objective.version': str(OBJECTIVE_VERSION),
+              'objective.weights.power': str(objective['weights']['power']),
+              'objective.weights.utilization': str(objective['weights']['utilization']),
+              'objective.normalization.power': POWER_NORMALIZATION,
+              'objective.normalization.power_max_w_sum': str(objective['normalization']['power_max_w_sum']),
+              'objective.normalization.utilization': UTILIZATION_NORMALIZATION,
+              'objective.sla.model': SLA_MODEL,
+              'vm.count': str(resolved['vms']['count']),
               'host.count': str(sum(host_class['count'] for host_class in resolved['hosts'])),
               'host.classes': str(len(resolved['hosts'])), 'expected.cases': str(plan['expected_cases']),
               'expected.evaluations': str(plan['expected_evaluations']), 'utilization.model': 'constant_full',
@@ -848,9 +933,13 @@ def completed_run(parent, digest, resolved):
     for name, value in [('expected_cases', plan['expected_cases']), ('attempted_cases', plan['expected_cases']),
                         ('successful_cases', plan['expected_cases']), ('failed_cases', 0), ('unattempted_cases', 0),
                         ('expected_evaluations', plan['expected_evaluations']),
-                        ('completed_evaluations', plan['expected_evaluations'])]:
+                        ('completed_evaluations', plan['expected_evaluations']),
+                        ('expected_simulations', plan['expected_cases']),
+                        ('completed_simulations', plan['expected_cases']), ('search_simulations', 0)]:
         if type(data.get(name)) is not int or data[name] != value:
             raise ValueError('Incorrect scenario completion counters')
+    if data.get('objective') != resolved.get('objective'):
+        raise ValueError('Recorded objective differs from the resolved configuration')
     recorded = data.get('config_sha256')
     if not isinstance(recorded, str) or len(recorded) != 64:
         raise ValueError('Scenario artifact does not record a configuration digest')
@@ -867,13 +956,13 @@ def completed_run(parent, digest, resolved):
     return run
 
 
-def _request_bytes(resolved):
-    return (json.dumps(resolved, indent=2) + '\n').encode('utf-8')
+def _request_bytes(document):
+    return (json.dumps(document, indent=2) + '\n').encode('utf-8')
 
 
-def request_digest(resolved):
+def request_digest(document):
     """SHA-256 of the canonical request bytes the engine will receive."""
-    return hashlib.sha256(_request_bytes(resolved)).hexdigest()
+    return hashlib.sha256(_request_bytes(document)).hexdigest()
 
 
 def _child_failure(parent, code, block):
@@ -894,7 +983,7 @@ def main(argv=None, *, dashboard=None, on_complete=None, invocation=None) -> int
     args = parse_args(arguments)
     resolved = args.resolved
     request_written = args.config_path is None
-    config_sha256 = (hashlib.sha256(_request_bytes(resolved)).hexdigest() if request_written
+    config_sha256 = (hashlib.sha256(_request_bytes(args.request)).hexdigest() if request_written
                      else shared.sha256(args.config_path))
     metadata = {'started_at': shared.stamp(), 'status': 'preflight', 'exit_code': None, 'profile': PHASE,
                 'arguments': arguments, 'config': args.source, 'config_sha256': config_sha256,
@@ -943,7 +1032,7 @@ def main(argv=None, *, dashboard=None, on_complete=None, invocation=None) -> int
         dashboard.console = console
         request = outer/'scenario-request.json' if request_written else args.config_path.resolve()
         if request_written:
-            request.write_bytes(_request_bytes(resolved))
+            request.write_bytes(_request_bytes(args.request))
         metadata.update(output_directory=str(outer), request_file=str(request))
         shared.save_metadata(outer, metadata)
         if supplied_dashboard:

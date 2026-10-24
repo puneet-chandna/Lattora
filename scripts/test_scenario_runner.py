@@ -215,6 +215,49 @@ class ConfigurationRules(unittest.TestCase):
             with self.subTest(rule=label):
                 self.rejected(change, message)
 
+    def test_objective_rules(self):
+        weights = {'power': 0.4, 'utilization': 0.6}
+        malformed = ('objective.weights must contain power and utilization numbers from 0.0 to 1.0 '
+                     'whose sum is exactly 1.0')
+        for label, objective, message in [
+            ('not an object', 'power', 'objective must be an object with a kind'),
+            ('missing kind', {}, 'objective.kind must be one of power,utilization,sla,weighted'),
+            ('unknown kind', {'kind': 'energy'}, 'objective.kind must be one of power,utilization,sla,weighted'),
+            ('sla unsupported', {'kind': 'sla'}, runner.SLA_UNSUPPORTED),
+            ('weights with power', {'kind': 'power', 'weights': weights},
+             'objective.weights is only valid when objective.kind is weighted'),
+            ('weights with utilization', {'kind': 'utilization', 'weights': weights},
+             'objective.weights is only valid when objective.kind is weighted'),
+            ('unknown field', {'kind': 'power', 'bogus': 1}, 'unknown field: objective.bogus'),
+            ('weighted without weights', {'kind': 'weighted'},
+             'objective.weights is required when objective.kind is weighted'),
+            ('weighted weights not object', {'kind': 'weighted', 'weights': 1},
+             'objective.weights is required when objective.kind is weighted'),
+            ('unknown weight', {'kind': 'weighted', 'weights': {'power': 0.5, 'bogus': 0.5}},
+             'unknown field: objective.weights.bogus'),
+            ('sla weight', {'kind': 'weighted', 'weights': {'power': 0.5, 'sla': 0.5}},
+             'objective.weights.sla is unsupported: constant full utilization cannot predict SLA differences'),
+            ('missing utilization', {'kind': 'weighted', 'weights': {'power': 0.5}}, malformed),
+            ('sum below one', {'kind': 'weighted', 'weights': {'power': 0.4, 'utilization': 0.4}}, malformed),
+            ('sum above one', {'kind': 'weighted', 'weights': {'power': 0.6, 'utilization': 0.5}}, malformed),
+            ('negative weight', {'kind': 'weighted', 'weights': {'power': -0.1, 'utilization': 1.1}}, malformed),
+            ('string weight', {'kind': 'weighted', 'weights': {'power': '0.5', 'utilization': '0.5'}}, malformed),
+        ]:
+            with self.subTest(rule=label):
+                self.rejected(lambda c, objective=objective: c.update(objective=objective), message)
+        for kind, power, utilization in [('power', 1.0, 0.0), ('utilization', 0.0, 1.0),
+                                         ('weighted', 0.4, 0.6)]:
+            with self.subTest(accepted=kind):
+                config = deepcopy(self.tight)
+                config['objective'] = {'kind': kind} if kind != 'weighted' else {'kind': kind, 'weights': weights}
+                resolved = runner.resolve_config(config)['objective']
+                self.assertEqual((resolved['kind'], resolved['weights']['power'],
+                                  resolved['weights']['utilization']), (kind, power, utilization))
+                self.assertEqual(resolved['version'], 1)
+                self.assertEqual(resolved['normalization'],
+                                 {'power': 'sum_host_max_w', 'power_max_w_sum': 400,
+                                  'utilization': 'reserved_peak_fraction'})
+
     def test_event_divisor_rule_precedes_the_host_class_ceiling(self):
         # 3010 is neither an exact multiple of 8 nor admitted by the 3000 MIPS/PE host class: the divisor wins.
         self.rejected(lambda c: c['vms'].update(mips_per_pe=[3010]),
@@ -352,7 +395,11 @@ class ResolutionAndGeneration(unittest.TestCase):
         resolved = self.resolved('known-answer-tight')
         self.assertEqual(resolved, {
             'config_version': 1, 'name': 'known-answer-tight', 'master_seed': 123456, 'replications': 1,
-            'algorithms': ['HO', 'GA', 'FirstFit', 'BestFit'], 'optimizer': {'population': 10, 'iterations': 4},
+            'algorithms': ['HO', 'GA', 'FirstFit', 'BestFit'],
+            'objective': {'kind': 'power', 'version': 1, 'weights': {'power': 1.0, 'utilization': 0.0},
+                          'normalization': {'power': 'sum_host_max_w', 'power_max_w_sum': 400,
+                                            'utilization': 'reserved_peak_fraction'}},
+            'optimizer': {'population': 10, 'iterations': 4},
             'hosts': [{'count': 2, 'pes': 2, 'mips_per_pe': 3000, 'ram_mib': 8192, 'bw_mbps': 2000,
                        'storage_mib': 20000, 'idle_w': 100, 'max_w': 200}],
             'vms': {'count': 2, 'pes': [2], 'mips_per_pe': [3000], 'ram_mib': [8192], 'bw_mbps': [2000],
@@ -392,8 +439,8 @@ class ResolutionAndGeneration(unittest.TestCase):
 
     def test_presets_are_complete_and_private(self):
         self.assertEqual(list(runner.PRESETS),
-                         ['known-answer-feasible', 'known-answer-tight', 'known-answer-infeasible',
-                          'heterogeneous-hosts', 'resource-pressure'])
+                         ['known-answer-feasible', 'known-answer-tight', 'known-answer-tradeoff',
+                          'known-answer-infeasible', 'heterogeneous-hosts', 'resource-pressure'])
         for name in runner.PRESETS:
             with self.subTest(preset=name):
                 config = runner.preset_config(name)
@@ -401,10 +448,17 @@ class ResolutionAndGeneration(unittest.TestCase):
                 self.assertEqual(config['name'], name)
                 self.assertIs(type(config['master_seed']), int)
                 self.assertIs(type(config['replications']), int)
-                self.assertEqual(config['algorithms'], ['HO', 'GA', 'FirstFit', 'BestFit'])
+                expected_algorithms = ['HO', 'GA'] if name == 'known-answer-tradeoff' else ['HO', 'GA', 'FirstFit', 'BestFit']
+                self.assertEqual(config['algorithms'], expected_algorithms)
                 self.assertEqual(config['optimizer'], {'population': 10, 'iterations': 4})
                 self.assertEqual(runner.validate_config(config)['name'], name)
-                self.assertEqual(runner.resolve_config(config)['name'], name)
+                resolved = runner.resolve_config(config)
+                self.assertEqual(resolved['name'], name)
+                self.assertEqual(resolved['objective']['kind'], 'power')
+                self.assertEqual(resolved['objective']['version'], 1)
+                self.assertEqual(resolved['objective']['weights'], {'power': 1.0, 'utilization': 0.0})
+                self.assertEqual(resolved['objective']['normalization']['power'], 'sum_host_max_w')
+                self.assertEqual(resolved['objective']['normalization']['utilization'], 'reserved_peak_fraction')
                 self.assertEqual(len(set(config['vms']['mips_per_pe'])), len(config['vms']['mips_per_pe']))
                 for value in config['vms']['mips_per_pe']:
                     self.assertEqual(value % runner.EXACT_EVENT_DIVISOR, 0,
@@ -416,6 +470,7 @@ class ResolutionAndGeneration(unittest.TestCase):
     def test_preset_classes(self):
         expected = {'known-answer-feasible': [(0, 'CONSTRUCTIBLE', None)],
                     'known-answer-tight': [(0, 'CONSTRUCTIBLE', None)],
+                    'known-answer-tradeoff': [(0, 'CONSTRUCTIBLE', None)],
                     'known-answer-infeasible': [(0, 'INFEASIBLE_PROVED',
                                                  'replication 0 total ram_mib demand 8192 exceeds total host ram_mib '
                                                  'capacity 4096')],
@@ -448,6 +503,18 @@ class ResolutionAndGeneration(unittest.TestCase):
         self.assertEqual(heterogeneous['vms']['mips_per_pe'], [1000, 1400])
         slowest = min(host_class['mips_per_pe'] for host_class in heterogeneous['hosts'])
         self.assertLessEqual(max(heterogeneous['vms']['mips_per_pe']), slowest)
+
+    def test_tradeoff_preset_exposes_the_documented_power_utilization_choice(self):
+        resolved = self.resolved('known-answer-tradeoff')
+        self.assertEqual([(host['count'], host['pes'], host['max_w']) for host in resolved['hosts']],
+                         [(1, 2, 20), (1, 6, 200)])
+        self.assertEqual(resolved['vms']['count'], 2)
+        self.assertEqual(resolved['objective']['normalization']['power_max_w_sum'], 220)
+        self.assertEqual(resolved['objective']['weights'], {'power': 1.0, 'utilization': 0.0})
+        spec = runner.generated_spec(resolved, 0)
+        self.assertEqual([host['id'] for host in spec['inputs']['hosts']], [0, 1])
+        self.assertEqual([vm['id'] for vm in spec['inputs']['vms']], [0, 1])
+        self.assertEqual(spec['reference_seconds'], [30.0, 30.0])
 
     def test_two_families_differ_by_configuration_alone(self):
         heterogeneous = runner.generated_spec(self.resolved('heterogeneous-hosts'), 0)
@@ -508,8 +575,12 @@ class EffectiveAndPlannedWork(unittest.TestCase):
             'algorithms': 'HO,GA,FirstFit,BestFit', 'config.name': 'known-answer-tight', 'config.sha256': 'a' * 64,
             'evaluation.budget': '130', 'expected.cases': '4', 'expected.evaluations': '262',
             'experiment.kind': 'static_scenario', 'experiment.phase': 'scenario', 'host.classes': '1',
-            'host.count': '2', 'master.seed': '123456', 'optimizer.iterations': '4', 'optimizer.population': '10',
-            'profile': 'scenario', 'replication.count': '1', 'scenario.schema.version': '1',
+            'host.count': '2', 'master.seed': '123456', 'objective.kind': 'power',
+            'objective.normalization.power': 'sum_host_max_w', 'objective.normalization.power_max_w_sum': '400',
+            'objective.normalization.utilization': 'reserved_peak_fraction', 'objective.sla.model':
+                'unsupported_constant_full', 'objective.version': '1', 'objective.weights.power': '1.0',
+            'objective.weights.utilization': '0.0', 'optimizer.iterations': '4', 'optimizer.population': '10',
+            'profile': 'scenario', 'replication.count': '1', 'scenario.schema.version': '2',
             'utilization.model': 'constant_full', 'utilization.value': '1.0', 'vm.count': '2',
             'workload.length.seconds': '60,60'})
         self.assertTrue(all(isinstance(value, str) for value in values.values()))
@@ -537,10 +608,14 @@ class EffectiveAndPlannedWork(unittest.TestCase):
         self.assertEqual(runner.MODEL_LIMITS, MODEL_LIMITS)
         self.assertEqual(runner.EVIDENCE_LIMIT, EVIDENCE_LIMIT)
         self.assertEqual(runner.ALLOCATION_TIMING, ALLOCATION_TIMING)
-        self.assertEqual(runner.PROTOCOL, 'static_scenario_v1')
+        self.assertEqual(runner.PROTOCOL, 'static_scenario_v2')
         self.assertEqual(runner.PHASE, 'scenario')
-        self.assertEqual(runner.SCENARIO_SCHEMA_VERSION, 1)
+        self.assertEqual(runner.SCENARIO_SCHEMA_VERSION, 2)
         self.assertEqual(runner.CONFIG_VERSION, 1)
+        self.assertEqual(runner.OBJECTIVE_VERSION, 1)
+        self.assertEqual(runner.POWER_NORMALIZATION, 'sum_host_max_w')
+        self.assertEqual(runner.UTILIZATION_NORMALIZATION, 'reserved_peak_fraction')
+        self.assertEqual(runner.SLA_MODEL, 'unsupported_constant_full')
         self.assertEqual(runner.ALGORITHMS, ('HO', 'GA', 'FirstFit', 'BestFit'))
         self.assertEqual(runner.SEARCH_ALGORITHMS, ('HO', 'GA'))
         self.assertEqual(runner.LIMITS, {'MAX_HOST_CLASSES': 16, 'MAX_HOSTS': 100000, 'MAX_VMS': 100000,
@@ -564,17 +639,20 @@ class RetainedArtifacts(unittest.TestCase):
         recorded = hashlib.sha256(request).hexdigest()
         plan = runner.planned_work(resolved)
         expected = plan['expected_cases'] if complete else 1
-        manifest = {'experiment_kind': 'static_scenario', 'scenario_schema_version': 1, 'protocol': runner.PROTOCOL,
+        manifest = {'experiment_kind': 'static_scenario', 'scenario_schema_version': 2, 'protocol': runner.PROTOCOL,
                     'profile': 'scenario', 'run_id': 'scenario-test', 'config_name': resolved['name'],
                     'config_sha256': recorded, 'state': 'COMPLETE' if complete else 'FAILED',
                     'error': None if complete else {'code': 'SCENARIO_INFEASIBLE', 'message': 'replication 0'},
                     'artifact_sha256': self.digest, 'master_seed': resolved['master_seed'],
                     'resolved_config': resolved, 'effective_config': runner.effective(resolved, recorded),
+                    'objective': resolved['objective'],
                     'feasibility': runner.feasibilities(resolved), 'expected_cases': plan['expected_cases'],
                     'attempted_cases': expected, 'successful_cases': expected if complete else 0,
                     'failed_cases': 0 if complete else 1, 'unattempted_cases': plan['expected_cases'] - expected,
                     'expected_evaluations': plan['expected_evaluations'],
-                    'completed_evaluations': plan['expected_evaluations'] if complete else 0}
+                    'completed_evaluations': plan['expected_evaluations'] if complete else 0,
+                    'expected_simulations': plan['expected_cases'],
+                    'completed_simulations': plan['expected_cases'] if complete else 0, 'search_simulations': 0}
         parent = Path(tempfile.mkdtemp(prefix='run-', dir=self.base))/'artifacts'
         run = parent/'scenario-test'
         (run/'config').mkdir(parents=True)
@@ -760,7 +838,7 @@ class ProgressAndPreview(unittest.TestCase):
         run = parent/'scenario-test'
         run.mkdir(parents=True)
         (run/'progress.json').write_text(json.dumps(
-            {'experiment_kind': 'static_scenario', 'scenario_schema_version': 1, 'run_id': 'scenario-test',
+            {'experiment_kind': 'static_scenario', 'scenario_schema_version': 2, 'run_id': 'scenario-test',
              'state': 'RUNNING', 'expected_cases': 4, 'attempted_cases': 2, 'successful_cases': 1, 'failed_cases': 0,
              'unattempted_cases': 2, 'expected_evaluations': 262, 'completed_evaluations': 130, 'error': None,
              'current_case': {'phase': 'scenario', 'scenario': 'known-answer-tight', 'replication': 0, 'algorithm': 'GA',

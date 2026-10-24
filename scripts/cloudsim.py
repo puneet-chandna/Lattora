@@ -203,7 +203,7 @@ def _effective(options):
     if options.profile == 'scenario':
         arguments_ = options.scenario_options
         digest = (shared.sha256(arguments_.config_path) if arguments_.config_path is not None
-                  else scenario.request_digest(arguments_.resolved))
+                  else scenario.request_digest(arguments_.request))
         result = scenario.effective(arguments_.resolved, digest)
     elif options.profile == 'stress':
         result = stress.effective(options.stress_options)
@@ -237,7 +237,7 @@ def preview(options: argparse.Namespace) -> dict:
                                           heap_mib=options.heap_mib)]
         effective['config'] = arguments_.source
         effective['config.sha256'] = (shared.sha256(arguments_.config_path) if arguments_.config_path is not None
-                                       else scenario.request_digest(arguments_.resolved))
+                                       else scenario.request_digest(arguments_.request))
     elif options.profile == 'stress':
         plan = stress.planned_work(options.stress_options)
         blocks = [(p, 'stress_calibration', f'calibration-{p.vms}') for p in stress.calibrations(options.stress_options)]
